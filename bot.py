@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -10,11 +11,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN = os.environ["DISCORD_TOKEN"]
-GUILD_ID = int(os.environ["GUILD_ID"])
+_TOKENS_RAW = os.environ.get("DISCORD_TOKENS") or os.environ.get("DISCORD_TOKEN")
+if not _TOKENS_RAW:
+    raise RuntimeError("set DISCORD_TOKEN (single) or DISCORD_TOKENS (comma-separated)")
+TOKENS = [t.strip() for t in _TOKENS_RAW.split(",") if t.strip()]
 DATABASE_URL = os.environ["DATABASE_URL"]
-ENV_INTRO_CHANNEL_ID = int(os.environ["INTRO_CHANNEL_ID"]) if os.environ.get("INTRO_CHANNEL_ID") else None
-ENV_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "3600"))
+DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "3600"))
 INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
 
 EMBED_DESCRIPTION_LIMIT = 4000
@@ -23,19 +25,12 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("intro-bot")
 
-GUILD_OBJECT = discord.Object(id=GUILD_ID)
-
 
 @dataclass
-class RuntimeConfig:
-    intro_channel_id: int
+class GuildConfig:
+    guild_id: int
+    intro_channel_id: int | None
     cooldown_seconds: int
-
-
-runtime_config: RuntimeConfig
-db_pool: asyncpg.Pool
-last_posted_at: dict[int, float] = {}
-intro_message_id: dict[int, int] = {}
 
 
 async def init_schema(pool: asyncpg.Pool) -> None:
@@ -43,86 +38,52 @@ async def init_schema(pool: asyncpg.Pool) -> None:
         await con.execute(
             """
             CREATE TABLE IF NOT EXISTS bot_config (
-                id               SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                intro_channel_id BIGINT      NOT NULL,
-                cooldown_seconds INTEGER     NOT NULL CHECK (cooldown_seconds BETWEEN 1 AND 86400),
+                guild_id         BIGINT PRIMARY KEY,
+                intro_channel_id BIGINT,
+                cooldown_seconds INTEGER NOT NULL DEFAULT 3600 CHECK (cooldown_seconds BETWEEN 1 AND 86400),
                 updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
         )
 
 
-async def load_or_bootstrap_config(pool: asyncpg.Pool) -> RuntimeConfig:
+async def load_all_configs(pool: asyncpg.Pool) -> dict[int, GuildConfig]:
     async with pool.acquire() as con:
-        row = await con.fetchrow("SELECT intro_channel_id, cooldown_seconds FROM bot_config WHERE id = 1")
-        if row is not None:
-            return RuntimeConfig(
-                intro_channel_id=row["intro_channel_id"],
-                cooldown_seconds=row["cooldown_seconds"],
-            )
-        if ENV_INTRO_CHANNEL_ID is None:
-            raise RuntimeError(
-                "bot_config is empty and INTRO_CHANNEL_ID env var is not set; "
-                "set INTRO_CHANNEL_ID for first-time bootstrap"
-            )
-        await con.execute(
-            "INSERT INTO bot_config (id, intro_channel_id, cooldown_seconds) "
-            "VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING",
-            ENV_INTRO_CHANNEL_ID,
-            ENV_COOLDOWN_SECONDS,
-        )
-        row = await con.fetchrow("SELECT intro_channel_id, cooldown_seconds FROM bot_config WHERE id = 1")
-        return RuntimeConfig(
-            intro_channel_id=row["intro_channel_id"],
-            cooldown_seconds=row["cooldown_seconds"],
-        )
+        rows = await con.fetch("SELECT guild_id, intro_channel_id, cooldown_seconds FROM bot_config")
+    return {r["guild_id"]: GuildConfig(r["guild_id"], r["intro_channel_id"], r["cooldown_seconds"]) for r in rows}
 
 
-async def update_intro_channel(pool: asyncpg.Pool, channel_id: int) -> None:
-    global runtime_config
+async def upsert_intro_channel(pool: asyncpg.Pool, guild_id: int, channel_id: int) -> GuildConfig:
     async with pool.acquire() as con:
-        await con.execute(
-            "UPDATE bot_config SET intro_channel_id = $1, updated_at = NOW() WHERE id = 1",
+        row = await con.fetchrow(
+            """
+            INSERT INTO bot_config (guild_id, intro_channel_id, cooldown_seconds)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE
+            SET intro_channel_id = EXCLUDED.intro_channel_id, updated_at = NOW()
+            RETURNING guild_id, intro_channel_id, cooldown_seconds
+            """,
+            guild_id,
             channel_id,
+            DEFAULT_COOLDOWN_SECONDS,
         )
-    runtime_config = RuntimeConfig(
-        intro_channel_id=channel_id,
-        cooldown_seconds=runtime_config.cooldown_seconds,
-    )
-    intro_message_id.clear()
+    return GuildConfig(row["guild_id"], row["intro_channel_id"], row["cooldown_seconds"])
 
 
-async def update_cooldown(pool: asyncpg.Pool, seconds: int) -> None:
-    global runtime_config
+async def upsert_cooldown(pool: asyncpg.Pool, guild_id: int, seconds: int) -> GuildConfig:
     async with pool.acquire() as con:
-        await con.execute(
-            "UPDATE bot_config SET cooldown_seconds = $1, updated_at = NOW() WHERE id = 1",
+        row = await con.fetchrow(
+            """
+            INSERT INTO bot_config (guild_id, intro_channel_id, cooldown_seconds)
+            VALUES ($1, NULL, $2)
+            ON CONFLICT (guild_id) DO UPDATE
+            SET cooldown_seconds = EXCLUDED.cooldown_seconds, updated_at = NOW()
+            RETURNING guild_id, intro_channel_id, cooldown_seconds
+            """,
+            guild_id,
             seconds,
         )
-    runtime_config = RuntimeConfig(
-        intro_channel_id=runtime_config.intro_channel_id,
-        cooldown_seconds=seconds,
-    )
-
-
-async def find_intro_message(intro_channel: discord.TextChannel, user_id: int) -> discord.Message | None:
-    cached = intro_message_id.get(user_id)
-    if cached is not None:
-        try:
-            return await intro_channel.fetch_message(cached)
-        except discord.NotFound:
-            intro_message_id.pop(user_id, None)
-        except discord.Forbidden:
-            raise
-        except discord.HTTPException as e:
-            log.warning("fetch_message failed for %s: %s; skipping history scan", cached, e)
-            return None
-
-    async for msg in intro_channel.history(limit=INTRO_HISTORY_MAX_SCAN, oldest_first=False):
-        if msg.author.id == user_id and msg.content.strip():
-            intro_message_id[user_id] = msg.id
-            return msg
-    return None
+    return GuildConfig(row["guild_id"], row["intro_channel_id"], row["cooldown_seconds"])
 
 
 def truncate(text: str, limit: int) -> str:
@@ -152,170 +113,153 @@ def build_embed(member: discord.Member, intro: discord.Message) -> discord.Embed
     return embed
 
 
-intents = discord.Intents.default()
-intents.voice_states = True
-intents.message_content = True
-intents.members = True
-intents.guilds = True
+def _make_intents() -> discord.Intents:
+    intents = discord.Intents.default()
+    intents.voice_states = True
+    intents.message_content = True
+    intents.members = True
+    intents.guilds = True
+    return intents
 
 
-class MeishiBot(discord.Client):
-    def __init__(self) -> None:
-        super().__init__(intents=intents)
+class IntroBot(discord.Client):
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        super().__init__(intents=_make_intents())
         self.tree = app_commands.CommandTree(self)
+        self.pool = pool
+        self.configs: dict[int, GuildConfig] = {}
+        self.intro_message_id: dict[int, dict[int, int]] = {}
+        self.last_posted_at: dict[int, dict[int, float]] = {}
+        register_commands(self.tree, self)
 
     async def setup_hook(self) -> None:
-        global db_pool, runtime_config
-        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4)
-        await init_schema(db_pool)
-        runtime_config = await load_or_bootstrap_config(db_pool)
+        self.configs = await load_all_configs(self.pool)
+        log.info("loaded %d guild configs", len(self.configs))
+        await self.tree.sync()
+
+    def resolve_intro_channel(self, guild_id: int) -> discord.TextChannel | None:
+        cfg = self.configs.get(guild_id)
+        if cfg is None or cfg.intro_channel_id is None:
+            return None
+        ch = self.get_channel(cfg.intro_channel_id)
+        return ch if isinstance(ch, discord.TextChannel) else None
+
+    def _cache_get(self, guild_id: int, user_id: int) -> int | None:
+        return self.intro_message_id.get(guild_id, {}).get(user_id)
+
+    def _cache_set(self, guild_id: int, user_id: int, msg_id: int) -> None:
+        self.intro_message_id.setdefault(guild_id, {})[user_id] = msg_id
+
+    def _cache_pop(self, guild_id: int, user_id: int) -> None:
+        if guild_id in self.intro_message_id:
+            self.intro_message_id[guild_id].pop(user_id, None)
+
+    async def find_intro_message(
+        self, guild_id: int, intro_channel: discord.TextChannel, user_id: int
+    ) -> discord.Message | None:
+        cached = self._cache_get(guild_id, user_id)
+        if cached is not None:
+            try:
+                return await intro_channel.fetch_message(cached)
+            except discord.NotFound:
+                self._cache_pop(guild_id, user_id)
+            except discord.Forbidden:
+                raise
+            except discord.HTTPException as e:
+                log.warning("fetch_message failed for %s: %s; skipping history scan", cached, e)
+                return None
+
+        async for msg in intro_channel.history(limit=INTRO_HISTORY_MAX_SCAN, oldest_first=False):
+            if msg.author.id == user_id and msg.content.strip():
+                self._cache_set(guild_id, user_id, msg.id)
+                return msg
+        return None
+
+    async def on_ready(self) -> None:
         log.info(
-            "loaded config: intro_channel_id=%s cooldown_seconds=%s",
-            runtime_config.intro_channel_id,
-            runtime_config.cooldown_seconds,
-        )
-        register_commands(self.tree)
-        await self.tree.sync(guild=GUILD_OBJECT)
-
-
-bot = MeishiBot()
-
-
-@bot.event
-async def on_ready() -> None:
-    log.info("Logged in as %s (id=%s)", bot.user, getattr(bot.user, "id", None))
-
-
-@bot.event
-async def on_message(message: discord.Message) -> None:
-    if message.author.bot or message.guild is None or message.guild.id != GUILD_ID:
-        return
-    if message.channel.id != runtime_config.intro_channel_id:
-        return
-    if not message.content.strip():
-        return
-    intro_message_id[message.author.id] = message.id
-
-
-@bot.event
-async def on_message_delete(message: discord.Message) -> None:
-    if message.guild is None or message.guild.id != GUILD_ID:
-        return
-    if message.channel.id != runtime_config.intro_channel_id:
-        return
-    if intro_message_id.get(message.author.id) == message.id:
-        intro_message_id.pop(message.author.id, None)
-
-
-@bot.event
-async def on_voice_state_update(
-    member: discord.Member,
-    before: discord.VoiceState,
-    after: discord.VoiceState,
-) -> None:
-    if member.bot or member.guild.id != GUILD_ID:
-        return
-    if after.channel is None or before.channel == after.channel:
-        return
-    if isinstance(after.channel, discord.StageChannel):
-        return
-
-    now = time.time()
-    if now - last_posted_at.get(member.id, 0.0) < runtime_config.cooldown_seconds:
-        return
-
-    intro_channel = _resolve_intro_channel()
-    if intro_channel is None:
-        log.warning("intro channel not found or wrong type: %s", runtime_config.intro_channel_id)
-        return
-
-    try:
-        intro = await find_intro_message(intro_channel, member.id)
-    except discord.Forbidden:
-        log.error("Bot lacks permission to read %s", intro_channel)
-        return
-
-    if intro is None:
-        return
-
-    try:
-        await after.channel.send(
-            content=f"{member.mention} が参加しました",
-            embed=build_embed(member, intro),
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
-        )
-    except discord.Forbidden:
-        log.error("Bot lacks permission to send to %s", after.channel)
-        return
-    except discord.HTTPException as e:
-        log.error("failed to post to %s: %s", after.channel, e)
-        return
-
-    last_posted_at[member.id] = now
-
-
-def register_commands(tree: app_commands.CommandTree) -> None:
-    group = app_commands.Group(
-        name="intro-config",
-        description="intro-bot の設定を管理(管理者限定)",
-        default_permissions=discord.Permissions(administrator=True),
-        guild_only=True,
-    )
-
-    @group.command(name="show", description="現在の設定を表示")
-    async def show(interaction: discord.Interaction) -> None:
-        if not _ensure_admin(interaction):
-            return await _deny(interaction)
-        await interaction.response.send_message(
-            f"intro_channel: <#{runtime_config.intro_channel_id}>\ncooldown_seconds: {runtime_config.cooldown_seconds}",
-            ephemeral=True,
+            "[%s] ready (id=%s, guilds=%d)",
+            self.user,
+            getattr(self.user, "id", None),
+            len(self.guilds),
         )
 
-    @group.command(name="intro-channel", description="自己紹介チャンネルを変更")
-    @app_commands.describe(channel="新しい自己紹介チャンネル")
-    async def set_intro_channel(
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-    ) -> None:
-        if not _ensure_admin(interaction):
-            return await _deny(interaction)
-        try:
-            await update_intro_channel(db_pool, channel.id)
-        except Exception as e:
-            log.error("update_intro_channel failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or message.guild is None:
             return
-        await interaction.response.send_message(
-            f"自己紹介チャンネルを {channel.mention} に更新しました。",
-            ephemeral=True,
-        )
-
-    @group.command(name="cooldown", description="クールダウン秒数を変更")
-    @app_commands.describe(seconds="1〜86400 の整数(秒)")
-    async def set_cooldown_cmd(
-        interaction: discord.Interaction,
-        seconds: app_commands.Range[int, 1, 86400],
-    ) -> None:
-        if not _ensure_admin(interaction):
-            return await _deny(interaction)
-        try:
-            await update_cooldown(db_pool, seconds)
-        except Exception as e:
-            log.error("update_cooldown failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+        cfg = self.configs.get(message.guild.id)
+        if cfg is None or cfg.intro_channel_id is None:
             return
-        await interaction.response.send_message(
-            f"クールダウンを {seconds} 秒に更新しました。",
-            ephemeral=True,
-        )
+        if message.channel.id != cfg.intro_channel_id:
+            return
+        if not message.content.strip():
+            return
+        self._cache_set(message.guild.id, message.author.id, message.id)
 
-    tree.add_command(group, guild=GUILD_OBJECT)
+    async def on_message_delete(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
+        cfg = self.configs.get(message.guild.id)
+        if cfg is None or cfg.intro_channel_id is None:
+            return
+        if message.channel.id != cfg.intro_channel_id:
+            return
+        if self._cache_get(message.guild.id, message.author.id) == message.id:
+            self._cache_pop(message.guild.id, message.author.id)
 
-    @tree.command(
-        name="intros",
-        description="この VC にいる全員の自己紹介を表示",
-        guild=GUILD_OBJECT,
-    )
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
+        if member.bot:
+            return
+        if after.channel is None or before.channel == after.channel:
+            return
+        if isinstance(after.channel, discord.StageChannel):
+            return
+        cfg = self.configs.get(member.guild.id)
+        if cfg is None or cfg.intro_channel_id is None:
+            return
+
+        now = time.time()
+        last = self.last_posted_at.get(member.guild.id, {}).get(member.id, 0.0)
+        if now - last < cfg.cooldown_seconds:
+            return
+
+        intro_channel = self.resolve_intro_channel(member.guild.id)
+        if intro_channel is None:
+            log.warning("intro channel not found for guild %s", member.guild.id)
+            return
+
+        try:
+            intro = await self.find_intro_message(member.guild.id, intro_channel, member.id)
+        except discord.Forbidden:
+            log.error("Bot lacks permission to read %s", intro_channel)
+            return
+
+        if intro is None:
+            return
+
+        try:
+            await after.channel.send(
+                content=f"{member.mention} が参加しました",
+                embed=build_embed(member, intro),
+                allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
+            )
+        except discord.Forbidden:
+            log.error("Bot lacks permission to send to %s", after.channel)
+            return
+        except discord.HTTPException as e:
+            log.error("failed to post to %s: %s", after.channel, e)
+            return
+
+        self.last_posted_at.setdefault(member.guild.id, {})[member.id] = now
+
+
+def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
+    @tree.command(name="intros", description="この VC にいる全員の自己紹介を表示")
+    @app_commands.guild_only()
     async def intros_cmd(interaction: discord.Interaction) -> None:
         channel = interaction.channel
         if not isinstance(channel, discord.VoiceChannel):
@@ -328,24 +272,27 @@ def register_commands(tree: app_commands.CommandTree) -> None:
         if not members:
             await interaction.response.send_message("VC に誰もいません。", ephemeral=True)
             return
-        intro_channel = _resolve_intro_channel()
+        intro_channel = bot.resolve_intro_channel(interaction.guild_id)
         if intro_channel is None:
-            await interaction.response.send_message("自己紹介チャンネルが見つかりません。", ephemeral=True)
+            await interaction.response.send_message(
+                "自己紹介チャンネルが設定されていません。`/intro-config intro-channel` で設定してください。",
+                ephemeral=True,
+            )
             return
 
         await interaction.response.defer()
         embeds: list[discord.Embed] = []
         missing: list[discord.Member] = []
-        for member in members:
+        for m in members:
             try:
-                intro = await find_intro_message(intro_channel, member.id)
+                intro = await bot.find_intro_message(interaction.guild_id, intro_channel, m.id)
             except discord.Forbidden:
                 await interaction.followup.send("自己紹介チャンネルの読み取り権限がありません。", ephemeral=True)
                 return
             if intro is None:
-                missing.append(member)
+                missing.append(m)
             else:
-                embeds.append(build_embed(member, intro))
+                embeds.append(build_embed(m, intro))
 
         if not embeds:
             await interaction.followup.send("VC のメンバーに自己紹介はまだ投稿されていません。")
@@ -356,24 +303,21 @@ def register_commands(tree: app_commands.CommandTree) -> None:
             names = ", ".join(m.display_name for m in missing)
             await interaction.followup.send(f"自己紹介未登録: {names}", ephemeral=True)
 
-    @tree.command(
-        name="intro",
-        description="指定したメンバーの自己紹介を表示",
-        guild=GUILD_OBJECT,
-    )
+    @tree.command(name="intro", description="指定したメンバーの自己紹介を表示")
     @app_commands.describe(user="自己紹介を表示するメンバー")
+    @app_commands.guild_only()
     async def intro_cmd(interaction: discord.Interaction, user: discord.Member) -> None:
         if user.bot:
             await interaction.response.send_message("Bot の自己紹介はありません。", ephemeral=True)
             return
-        intro_channel = _resolve_intro_channel()
+        intro_channel = bot.resolve_intro_channel(interaction.guild_id)
         if intro_channel is None:
-            await interaction.response.send_message("自己紹介チャンネルが見つかりません。", ephemeral=True)
+            await interaction.response.send_message("自己紹介チャンネルが設定されていません。", ephemeral=True)
             return
 
         await interaction.response.defer()
         try:
-            intro_msg = await find_intro_message(intro_channel, user.id)
+            intro_msg = await bot.find_intro_message(interaction.guild_id, intro_channel, user.id)
         except discord.Forbidden:
             await interaction.followup.send("自己紹介チャンネルの読み取り権限がありません。", ephemeral=True)
             return
@@ -385,10 +329,67 @@ def register_commands(tree: app_commands.CommandTree) -> None:
             return
         await interaction.followup.send(embed=build_embed(user, intro_msg))
 
+    config_group = app_commands.Group(
+        name="intro-config",
+        description="intro-bot の設定を管理(管理者限定)",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
 
-def _resolve_intro_channel() -> discord.TextChannel | None:
-    ch = bot.get_channel(runtime_config.intro_channel_id)
-    return ch if isinstance(ch, discord.TextChannel) else None
+    @config_group.command(name="show", description="現在のギルド設定を表示")
+    async def show(interaction: discord.Interaction) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        cfg = bot.configs.get(interaction.guild_id)
+        if cfg is None:
+            text = f"intro_channel: 未設定\ncooldown_seconds: {DEFAULT_COOLDOWN_SECONDS}(デフォルト)"
+        else:
+            channel_text = f"<#{cfg.intro_channel_id}>" if cfg.intro_channel_id else "未設定"
+            text = f"intro_channel: {channel_text}\ncooldown_seconds: {cfg.cooldown_seconds}"
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @config_group.command(name="intro-channel", description="自己紹介チャンネルを設定")
+    @app_commands.describe(channel="自己紹介チャンネル")
+    async def set_intro_channel(
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        try:
+            cfg = await upsert_intro_channel(bot.pool, interaction.guild_id, channel.id)
+        except Exception as e:
+            log.error("upsert_intro_channel failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.configs[interaction.guild_id] = cfg
+        bot.intro_message_id.pop(interaction.guild_id, None)
+        await interaction.response.send_message(
+            f"自己紹介チャンネルを {channel.mention} に設定しました。",
+            ephemeral=True,
+        )
+
+    @config_group.command(name="cooldown", description="クールダウン秒数を変更")
+    @app_commands.describe(seconds="1〜86400 の整数(秒)")
+    async def set_cooldown(
+        interaction: discord.Interaction,
+        seconds: app_commands.Range[int, 1, 86400],
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        try:
+            cfg = await upsert_cooldown(bot.pool, interaction.guild_id, seconds)
+        except Exception as e:
+            log.error("upsert_cooldown failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.configs[interaction.guild_id] = cfg
+        await interaction.response.send_message(
+            f"クールダウンを {seconds} 秒に更新しました。",
+            ephemeral=True,
+        )
+
+    tree.add_command(config_group)
 
 
 def _ensure_admin(interaction: discord.Interaction) -> bool:
@@ -400,5 +401,19 @@ async def _deny(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("管理者専用コマンドです。", ephemeral=True)
 
 
+async def main() -> None:
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=max(4, 2 * len(TOKENS)))
+    await init_schema(pool)
+    log.info("starting %d client(s)", len(TOKENS))
+    clients = [IntroBot(pool) for _ in TOKENS]
+    try:
+        await asyncio.gather(*(c.start(t) for c, t in zip(clients, TOKENS, strict=True)))
+    finally:
+        for c in clients:
+            if not c.is_closed():
+                await c.close()
+        await pool.close()
+
+
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    asyncio.run(main())
