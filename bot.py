@@ -130,6 +130,9 @@ class IntroBot(discord.Client):
         self.configs: dict[int, GuildConfig] = {}
         self.intro_message_id: dict[int, dict[int, int]] = {}
         self.last_posted_at: dict[int, dict[int, float]] = {}
+        # 同一ユーザーの voice_state_update 並走中フラグ。クールダウンは
+        # 送信成功時にのみ立てるため、await 中の二重投稿はこの集合で抑える
+        self.in_flight: dict[int, set[int]] = {}
         register_commands(self.tree, self)
 
     async def setup_hook(self) -> None:
@@ -227,34 +230,46 @@ class IntroBot(discord.Client):
         if now - last < cfg.cooldown_seconds:
             return
 
-        intro_channel = self.resolve_intro_channel(member.guild.id)
-        if intro_channel is None:
-            log.warning("intro channel not found for guild %s", member.guild.id)
+        # in-flight 判定 → 登録は同期で完了させる(間に await を挟まない)。
+        # これで自動部屋作成時の「ロビー参加 → 即移動」のような連続発火を
+        # 二件目で弾ける
+        in_flight = self.in_flight.setdefault(member.guild.id, set())
+        if member.id in in_flight:
             return
+        in_flight.add(member.id)
 
         try:
-            intro = await self.find_intro_message(member.guild.id, intro_channel, member.id)
-        except discord.Forbidden:
-            log.error("Bot lacks permission to read %s", intro_channel)
-            return
+            intro_channel = self.resolve_intro_channel(member.guild.id)
+            if intro_channel is None:
+                log.warning("intro channel not found for guild %s", member.guild.id)
+                return
 
-        if intro is None:
-            return
+            try:
+                intro = await self.find_intro_message(member.guild.id, intro_channel, member.id)
+            except discord.Forbidden:
+                log.error("Bot lacks permission to read %s", intro_channel)
+                return
 
-        try:
-            await after.channel.send(
-                content=f"{member.mention} が参加しました",
-                embed=build_embed(member, intro),
-                allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
-            )
-        except discord.Forbidden:
-            log.error("Bot lacks permission to send to %s", after.channel)
-            return
-        except discord.HTTPException as e:
-            log.error("failed to post to %s: %s", after.channel, e)
-            return
+            if intro is None:
+                return
 
-        self.last_posted_at.setdefault(member.guild.id, {})[member.id] = now
+            try:
+                await after.channel.send(
+                    content=f"{member.mention} が参加しました",
+                    embed=build_embed(member, intro),
+                    allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
+                )
+            except discord.Forbidden:
+                log.error("Bot lacks permission to send to %s", after.channel)
+                return
+            except discord.HTTPException as e:
+                log.error("failed to post to %s: %s", after.channel, e)
+                return
+
+            # 送信が成功した場合のみクールダウンを確定させる
+            self.last_posted_at.setdefault(member.guild.id, {})[member.id] = now
+        finally:
+            in_flight.discard(member.id)
 
 
 def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
