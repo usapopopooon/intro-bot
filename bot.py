@@ -224,8 +224,8 @@ async def on_voice_state_update(
     if now - last_posted_at.get(member.id, 0.0) < runtime_config.cooldown_seconds:
         return
 
-    intro_channel = bot.get_channel(runtime_config.intro_channel_id)
-    if not isinstance(intro_channel, discord.TextChannel):
+    intro_channel = _resolve_intro_channel()
+    if intro_channel is None:
         log.warning("intro channel not found or wrong type: %s", runtime_config.intro_channel_id)
         return
 
@@ -310,6 +310,85 @@ def register_commands(tree: app_commands.CommandTree) -> None:
         )
 
     tree.add_command(group, guild=GUILD_OBJECT)
+
+    @tree.command(
+        name="intros",
+        description="この VC にいる全員の自己紹介を表示",
+        guild=GUILD_OBJECT,
+    )
+    async def intros_cmd(interaction: discord.Interaction) -> None:
+        channel = interaction.channel
+        if not isinstance(channel, discord.VoiceChannel):
+            await interaction.response.send_message(
+                "このコマンドは VC のテキストチャットで実行してください。",
+                ephemeral=True,
+            )
+            return
+        members = [m for m in channel.members if not m.bot]
+        if not members:
+            await interaction.response.send_message("VC に誰もいません。", ephemeral=True)
+            return
+        intro_channel = _resolve_intro_channel()
+        if intro_channel is None:
+            await interaction.response.send_message("自己紹介チャンネルが見つかりません。", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        embeds: list[discord.Embed] = []
+        missing: list[discord.Member] = []
+        for member in members:
+            try:
+                intro = await find_intro_message(intro_channel, member.id)
+            except discord.Forbidden:
+                await interaction.followup.send("自己紹介チャンネルの読み取り権限がありません。", ephemeral=True)
+                return
+            if intro is None:
+                missing.append(member)
+            else:
+                embeds.append(build_embed(member, intro))
+
+        if not embeds:
+            await interaction.followup.send("VC のメンバーに自己紹介はまだ投稿されていません。")
+            return
+        for i in range(0, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[i : i + 10])
+        if missing:
+            names = ", ".join(m.display_name for m in missing)
+            await interaction.followup.send(f"自己紹介未登録: {names}", ephemeral=True)
+
+    @tree.command(
+        name="intro",
+        description="指定したメンバーの自己紹介を表示",
+        guild=GUILD_OBJECT,
+    )
+    @app_commands.describe(user="自己紹介を表示するメンバー")
+    async def intro_cmd(interaction: discord.Interaction, user: discord.Member) -> None:
+        if user.bot:
+            await interaction.response.send_message("Bot の自己紹介はありません。", ephemeral=True)
+            return
+        intro_channel = _resolve_intro_channel()
+        if intro_channel is None:
+            await interaction.response.send_message("自己紹介チャンネルが見つかりません。", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        try:
+            intro_msg = await find_intro_message(intro_channel, user.id)
+        except discord.Forbidden:
+            await interaction.followup.send("自己紹介チャンネルの読み取り権限がありません。", ephemeral=True)
+            return
+        if intro_msg is None:
+            await interaction.followup.send(
+                f"{user.display_name} さんの自己紹介はまだ投稿されていません。",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(embed=build_embed(user, intro_msg))
+
+
+def _resolve_intro_channel() -> discord.TextChannel | None:
+    ch = bot.get_channel(runtime_config.intro_channel_id)
+    return ch if isinstance(ch, discord.TextChannel) else None
 
 
 def _ensure_admin(interaction: discord.Interaction) -> bool:

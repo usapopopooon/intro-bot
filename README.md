@@ -2,7 +2,6 @@
 
 Discord でユーザーが VC に入室すると、自己紹介チャンネルの最新投稿を VC のテキストチャット(text-in-voice)に埋め込み形式で自動投稿する Bot。
 
-- 詳細仕様: [SPEC.md](SPEC.md)
 - 運用 / 管理者向けの使い方: [docs/usage.md](docs/usage.md)
 
 ## 必要なもの
@@ -59,8 +58,6 @@ docker compose down -v    # ボリュームごと削除(DB リセット)
    - `COOLDOWN_SECONDS`(任意)
 4. デプロイ後 Logs で `Logged in as ...` を確認
 5. Discord で管理者として `/intro-config show` を実行し、設定が反映されているか確認
-
-詳細手順と注意点は [SPEC.md § 8.2](SPEC.md#82-railway-デプロイ)。
 
 ## Bot 権限
 
