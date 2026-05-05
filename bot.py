@@ -232,7 +232,7 @@ class IntroBot(discord.Client):
 
         # in-flight 判定 → 登録は同期で完了させる(間に await を挟まない)。
         # これで自動部屋作成時の「ロビー参加 → 即移動」のような連続発火を
-        # 二件目で弾ける
+        # 二件目以降で弾ける
         in_flight = self.in_flight.setdefault(member.guild.id, set())
         if member.id in in_flight:
             return
@@ -253,17 +253,24 @@ class IntroBot(discord.Client):
             if intro is None:
                 return
 
+            # find_intro_message の await 中に後続の voice_state_update
+            # (ロビー → 新部屋への move 通知) が処理されるので、その時点での
+            # 現在地を投稿先にする。after.channel だとロビー宛になってしまう
+            target = member.voice.channel if member.voice else None
+            if target is None or isinstance(target, discord.StageChannel):
+                return
+
             try:
-                await after.channel.send(
+                await target.send(
                     content=f"{member.mention} が参加しました",
                     embed=build_embed(member, intro),
                     allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
                 )
             except discord.Forbidden:
-                log.error("Bot lacks permission to send to %s", after.channel)
+                log.error("Bot lacks permission to send to %s", target)
                 return
             except discord.HTTPException as e:
-                log.error("failed to post to %s: %s", after.channel, e)
+                log.error("failed to post to %s: %s", target, e)
                 return
 
             # 送信が成功した場合のみクールダウンを確定させる
