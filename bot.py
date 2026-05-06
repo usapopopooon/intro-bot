@@ -275,14 +275,31 @@ class IntroBot(discord.Client):
                 log.error("Bot lacks permission to read %s", intro_channel)
                 return
 
-            if intro is None:
-                return
-
             # find_intro_message の await 中に後続の voice_state_update
             # (ロビー → 新部屋への move 通知) が処理されるので、その時点での
             # 現在地を投稿先にする。after.channel だとロビー宛になってしまう
             target = member.voice.channel if member.voice else None
             if target is None or isinstance(target, discord.StageChannel):
+                return
+
+            if intro is None:
+                try:
+                    await target.send(
+                        content=(
+                            f"{member.mention} 自己紹介の検索に失敗しました。"
+                            "自己紹介が記入されていない可能性があります。"
+                            "当サーバーは自己紹介が必須となっておりますので、"
+                            "もしまだでしたら、ご記入をお願いいたします。"
+                        ),
+                        allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
+                    )
+                except discord.Forbidden:
+                    log.error("Bot lacks permission to send to %s", target)
+                    return
+                except discord.HTTPException as e:
+                    log.error("failed to post to %s: %s", target, e)
+                    return
+                self.last_posted_at.setdefault(member.guild.id, {})[member.id] = now
                 return
 
             # 直近に自己紹介が流れている VC では再投稿を抑える。コマンド経由の
