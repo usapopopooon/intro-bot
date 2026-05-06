@@ -247,9 +247,6 @@ class IntroBot(discord.Client):
                 log.error("Bot lacks permission to read %s", intro_channel)
                 return
 
-            if intro is None:
-                return
-
             # find_intro_message の await 中に後続の voice_state_update
             # (ロビー → 新部屋への move 通知) が処理されるので、その時点での
             # 現在地を投稿先にする。after.channel だとロビー宛になってしまう
@@ -262,6 +259,25 @@ class IntroBot(discord.Client):
             now = time.time()
             last = self.last_posted_at.get(member.guild.id, {}).get(member.id, {}).get(target.id, 0.0)
             if now - last < cfg.cooldown_seconds:
+                return
+
+            if intro is None:
+                # 自己紹介がまだ書かれていないユーザーにはメンション付きで記入を促す
+                try:
+                    await target.send(
+                        content=(
+                            f"{member.mention} 自己紹介の検索に失敗しました。"
+                            "自己紹介は必須となっておりますので、もしまだならご記入をお願いいたします。"
+                        ),
+                        allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
+                    )
+                except discord.Forbidden:
+                    log.error("Bot lacks permission to send to %s", target)
+                    return
+                except discord.HTTPException as e:
+                    log.error("failed to post to %s: %s", target, e)
+                    return
+                self.last_posted_at.setdefault(member.guild.id, {}).setdefault(member.id, {})[target.id] = now
                 return
 
             try:
