@@ -260,11 +260,7 @@ class IntroBot(discord.Client):
             # クールダウンは投稿先 VC 単位で持つ。target 確定後にチェックすることで
             # ロビー → 別部屋へ移った場合も実際の投稿先に対して正しく判定できる
             now = time.time()
-            last = (
-                self.last_posted_at.get(member.guild.id, {})
-                .get(member.id, {})
-                .get(target.id, 0.0)
-            )
+            last = self.last_posted_at.get(member.guild.id, {}).get(member.id, {}).get(target.id, 0.0)
             if now - last < cfg.cooldown_seconds:
                 return
 
