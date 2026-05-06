@@ -21,6 +21,8 @@ INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
 
 EMBED_DESCRIPTION_LIMIT = 4000
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+INTRO_FIELD_NAME = "自己紹介"
+RECENT_INTRO_SKIP_LIMIT = 3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("intro-bot")
@@ -106,11 +108,34 @@ def build_embed(member: discord.Member, intro: discord.Message) -> discord.Embed
         color=discord.Color.blurple(),
     )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    embed.add_field(name="自己紹介", value=f"[ジャンプ]({intro.jump_url})", inline=True)
+    embed.add_field(name=INTRO_FIELD_NAME, value=f"[ジャンプ]({intro.jump_url})", inline=True)
     img = _pick_image_attachment(intro.attachments)
     if img is not None:
         embed.set_image(url=img.url)
     return embed
+
+
+def _is_intro_post(message: discord.Message) -> bool:
+    if not message.author.bot:
+        return False
+    for embed in message.embeds:
+        for field in embed.fields:
+            if field.name == INTRO_FIELD_NAME:
+                return True
+    return False
+
+
+async def _has_recent_intro_post(channel: discord.abc.Messageable, limit: int = RECENT_INTRO_SKIP_LIMIT) -> bool:
+    try:
+        async for msg in channel.history(limit=limit):
+            if _is_intro_post(msg):
+                return True
+    except discord.Forbidden:
+        return False
+    except discord.HTTPException as e:
+        log.warning("recent-intro history scan failed on %s: %s", channel, e)
+        return False
+    return False
 
 
 def _make_intents() -> discord.Intents:
@@ -258,6 +283,11 @@ class IntroBot(discord.Client):
             # 現在地を投稿先にする。after.channel だとロビー宛になってしまう
             target = member.voice.channel if member.voice else None
             if target is None or isinstance(target, discord.StageChannel):
+                return
+
+            # 直近に自己紹介が流れている VC では再投稿を抑える。コマンド経由の
+            # /intro /intros は自前で history を見ないので影響を受けない
+            if await _has_recent_intro_post(target):
                 return
 
             try:

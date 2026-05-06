@@ -48,3 +48,25 @@ def test_pick_image_returns_first_match():
 
 def test_pick_image_empty():
     assert bot._pick_image_attachment([]) is None
+
+
+def _msg(*, bot_author: bool, field_names: list[str] | None = None, embeds: int = 1):
+    fields = [SimpleNamespace(name=n) for n in (field_names or [])]
+    embed_list = [SimpleNamespace(fields=fields) for _ in range(embeds)]
+    return SimpleNamespace(author=SimpleNamespace(bot=bot_author), embeds=embed_list)
+
+
+def test_is_intro_post_matches_bot_with_intro_field():
+    assert bot._is_intro_post(_msg(bot_author=True, field_names=["自己紹介"])) is True
+
+
+def test_is_intro_post_rejects_human_author():
+    assert bot._is_intro_post(_msg(bot_author=False, field_names=["自己紹介"])) is False
+
+
+def test_is_intro_post_rejects_bot_without_intro_field():
+    assert bot._is_intro_post(_msg(bot_author=True, field_names=["other"])) is False
+
+
+def test_is_intro_post_rejects_bot_with_no_embeds():
+    assert bot._is_intro_post(_msg(bot_author=True, embeds=0)) is False
