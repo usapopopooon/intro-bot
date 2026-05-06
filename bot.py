@@ -16,7 +16,7 @@ if not _TOKENS_RAW:
     raise RuntimeError("set DISCORD_TOKEN (single) or DISCORD_TOKENS (comma-separated)")
 TOKENS = [t.strip() for t in _TOKENS_RAW.split(",") if t.strip()]
 DATABASE_URL = os.environ["DATABASE_URL"]
-DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "3600"))
+DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "300"))
 INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
 
 EMBED_DESCRIPTION_LIMIT = 4000
@@ -38,11 +38,11 @@ class GuildConfig:
 async def init_schema(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as con:
         await con.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS bot_config (
                 guild_id         BIGINT PRIMARY KEY,
                 intro_channel_id BIGINT,
-                cooldown_seconds INTEGER NOT NULL DEFAULT 3600 CHECK (cooldown_seconds BETWEEN 1 AND 86400),
+                cooldown_seconds INTEGER NOT NULL DEFAULT {DEFAULT_COOLDOWN_SECONDS} CHECK (cooldown_seconds BETWEEN 1 AND 86400),
                 updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
