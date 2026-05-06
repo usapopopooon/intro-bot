@@ -36,6 +36,7 @@ intro-bot の運用ガイド。Bot 招待後の設定方法、メンバー目線
 | VC を退室 | — |
 | 同一 VC 内でミュート/配信開始/カメラ ON 等 | — |
 | ステージチャンネルへ入室 | — (対象外) |
+| `/intro-config exclude-vc` で除外した VC へ入室 | — (対象外) |
 
 ### クールダウン
 
@@ -85,6 +86,7 @@ intro-bot の運用ガイド。Bot 招待後の設定方法、メンバー目線
 ```
 intro_channel: #自己紹介
 cooldown_seconds: 60
+excluded_vcs: #ロビー, #作業部屋
 ```
 
 ### `/intro-config intro-channel <channel>`
@@ -103,6 +105,23 @@ cooldown_seconds: 60
 - 値の範囲は **1〜86400 秒**(1 秒〜1 日)
 - 即時反映。すでに最終投稿から経過した時間にそのまま新しい閾値が適用される(例: 30 分前に投稿したユーザーがいる状態で 1800 秒に変更すると、その時点でクールダウンが解除される)
 - 設定内容は DB に永続化される
+
+### `/intro-config exclude-vc add <channel>`
+
+指定 VC を自動投稿の対象から外す(その VC への入室では埋め込みも未記入リマインドも投稿しない)。
+
+- 対象は `VoiceChannel` のみ選択可能
+- メンバー向けスラッシュコマンド(`/intros` / `/intro`)は除外 VC でも通常通り動作する
+- すでに除外済みの VC を指定した場合は ephemeral で通知されるだけで状態は変わらない
+- 設定内容は DB(`bot_config.excluded_vc_ids`)に永続化される
+
+### `/intro-config exclude-vc remove <channel>`
+
+`exclude-vc add` で外した VC を自動投稿の対象に戻す。除外リストに含まれていない VC を指定した場合は ephemeral で通知される。
+
+### `/intro-config exclude-vc list`
+
+現在このギルドで除外している VC の一覧を ephemeral で表示する。除外がない場合は「除外 VC はありません。」と返る。
 
 ## トラブルシューティング
 

@@ -48,3 +48,35 @@ def test_pick_image_returns_first_match():
 
 def test_pick_image_empty():
     assert bot._pick_image_attachment([]) is None
+
+
+def _row(guild_id=1, intro_channel_id=None, cooldown_seconds=60, excluded_vc_ids=None):
+    return {
+        "guild_id": guild_id,
+        "intro_channel_id": intro_channel_id,
+        "cooldown_seconds": cooldown_seconds,
+        "excluded_vc_ids": excluded_vc_ids,
+    }
+
+
+def test_row_to_config_handles_null_excluded():
+    cfg = bot._row_to_config(_row(excluded_vc_ids=None))
+    assert cfg.excluded_vc_ids == frozenset()
+    assert isinstance(cfg.excluded_vc_ids, frozenset)
+
+
+def test_row_to_config_handles_empty_excluded():
+    cfg = bot._row_to_config(_row(excluded_vc_ids=[]))
+    assert cfg.excluded_vc_ids == frozenset()
+
+
+def test_row_to_config_populates_excluded():
+    cfg = bot._row_to_config(_row(excluded_vc_ids=[10, 20, 10]))
+    assert cfg.excluded_vc_ids == frozenset({10, 20})
+
+
+def test_row_to_config_passes_through_other_fields():
+    cfg = bot._row_to_config(_row(guild_id=42, intro_channel_id=777, cooldown_seconds=300))
+    assert cfg.guild_id == 42
+    assert cfg.intro_channel_id == 777
+    assert cfg.cooldown_seconds == 300

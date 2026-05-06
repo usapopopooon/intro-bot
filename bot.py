@@ -31,6 +31,19 @@ class GuildConfig:
     guild_id: int
     intro_channel_id: int | None
     cooldown_seconds: int
+    excluded_vc_ids: frozenset[int]
+
+
+_SELECT_COLUMNS = "guild_id, intro_channel_id, cooldown_seconds, excluded_vc_ids"
+
+
+def _row_to_config(row) -> GuildConfig:
+    return GuildConfig(
+        guild_id=row["guild_id"],
+        intro_channel_id=row["intro_channel_id"],
+        cooldown_seconds=row["cooldown_seconds"],
+        excluded_vc_ids=frozenset(row["excluded_vc_ids"] or ()),
+    )
 
 
 async def init_schema(pool: asyncpg.Pool) -> None:
@@ -42,49 +55,88 @@ async def init_schema(pool: asyncpg.Pool) -> None:
                 intro_channel_id BIGINT,
                 cooldown_seconds INTEGER NOT NULL DEFAULT {DEFAULT_COOLDOWN_SECONDS}
                                  CHECK (cooldown_seconds BETWEEN 1 AND 86400),
+                excluded_vc_ids  BIGINT[] NOT NULL DEFAULT '{{}}',
                 updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
+        )
+        await con.execute(
+            "ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS excluded_vc_ids BIGINT[] NOT NULL DEFAULT '{}'"
         )
 
 
 async def load_all_configs(pool: asyncpg.Pool) -> dict[int, GuildConfig]:
     async with pool.acquire() as con:
-        rows = await con.fetch("SELECT guild_id, intro_channel_id, cooldown_seconds FROM bot_config")
-    return {r["guild_id"]: GuildConfig(r["guild_id"], r["intro_channel_id"], r["cooldown_seconds"]) for r in rows}
+        rows = await con.fetch(f"SELECT {_SELECT_COLUMNS} FROM bot_config")
+    return {r["guild_id"]: _row_to_config(r) for r in rows}
 
 
 async def upsert_intro_channel(pool: asyncpg.Pool, guild_id: int, channel_id: int) -> GuildConfig:
     async with pool.acquire() as con:
         row = await con.fetchrow(
-            """
+            f"""
             INSERT INTO bot_config (guild_id, intro_channel_id, cooldown_seconds)
             VALUES ($1, $2, $3)
             ON CONFLICT (guild_id) DO UPDATE
             SET intro_channel_id = EXCLUDED.intro_channel_id, updated_at = NOW()
-            RETURNING guild_id, intro_channel_id, cooldown_seconds
+            RETURNING {_SELECT_COLUMNS}
             """,
             guild_id,
             channel_id,
             DEFAULT_COOLDOWN_SECONDS,
         )
-    return GuildConfig(row["guild_id"], row["intro_channel_id"], row["cooldown_seconds"])
+    return _row_to_config(row)
 
 
 async def upsert_cooldown(pool: asyncpg.Pool, guild_id: int, seconds: int) -> GuildConfig:
     async with pool.acquire() as con:
         row = await con.fetchrow(
-            """
+            f"""
             INSERT INTO bot_config (guild_id, intro_channel_id, cooldown_seconds)
             VALUES ($1, NULL, $2)
             ON CONFLICT (guild_id) DO UPDATE
             SET cooldown_seconds = EXCLUDED.cooldown_seconds, updated_at = NOW()
-            RETURNING guild_id, intro_channel_id, cooldown_seconds
+            RETURNING {_SELECT_COLUMNS}
             """,
             guild_id,
             seconds,
         )
-    return GuildConfig(row["guild_id"], row["intro_channel_id"], row["cooldown_seconds"])
+    return _row_to_config(row)
+
+
+async def add_excluded_vc(pool: asyncpg.Pool, guild_id: int, channel_id: int) -> GuildConfig:
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            f"""
+            INSERT INTO bot_config (guild_id, intro_channel_id, cooldown_seconds, excluded_vc_ids)
+            VALUES ($1, NULL, $2, ARRAY[$3]::BIGINT[])
+            ON CONFLICT (guild_id) DO UPDATE
+            SET excluded_vc_ids = (
+                SELECT COALESCE(ARRAY_AGG(DISTINCT v), '{{}}'::BIGINT[])
+                FROM UNNEST(bot_config.excluded_vc_ids || ARRAY[$3]::BIGINT[]) AS v
+            ), updated_at = NOW()
+            RETURNING {_SELECT_COLUMNS}
+            """,
+            guild_id,
+            DEFAULT_COOLDOWN_SECONDS,
+            channel_id,
+        )
+    return _row_to_config(row)
+
+
+async def remove_excluded_vc(pool: asyncpg.Pool, guild_id: int, channel_id: int) -> GuildConfig | None:
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            f"""
+            UPDATE bot_config
+            SET excluded_vc_ids = array_remove(excluded_vc_ids, $2), updated_at = NOW()
+            WHERE guild_id = $1
+            RETURNING {_SELECT_COLUMNS}
+            """,
+            guild_id,
+            channel_id,
+        )
+    return _row_to_config(row) if row is not None else None
 
 
 def truncate(text: str, limit: int) -> str:
@@ -254,6 +306,9 @@ class IntroBot(discord.Client):
             if target is None or isinstance(target, discord.StageChannel):
                 return
 
+            if target.id in cfg.excluded_vc_ids:
+                return
+
             # クールダウンは投稿先 VC 単位で持つ。target 確定後にチェックすることで
             # ロビー → 別部屋へ移った場合も実際の投稿先に対して正しく判定できる
             now = time.time()
@@ -384,10 +439,17 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             return await _deny(interaction)
         cfg = bot.configs.get(interaction.guild_id)
         if cfg is None:
-            text = f"intro_channel: 未設定\ncooldown_seconds: {DEFAULT_COOLDOWN_SECONDS}(デフォルト)"
+            text = (
+                f"intro_channel: 未設定\ncooldown_seconds: {DEFAULT_COOLDOWN_SECONDS}(デフォルト)\nexcluded_vcs: なし"
+            )
         else:
             channel_text = f"<#{cfg.intro_channel_id}>" if cfg.intro_channel_id else "未設定"
-            text = f"intro_channel: {channel_text}\ncooldown_seconds: {cfg.cooldown_seconds}"
+            excluded_text = ", ".join(f"<#{cid}>" for cid in cfg.excluded_vc_ids) if cfg.excluded_vc_ids else "なし"
+            text = (
+                f"intro_channel: {channel_text}\n"
+                f"cooldown_seconds: {cfg.cooldown_seconds}\n"
+                f"excluded_vcs: {excluded_text}"
+            )
         await interaction.response.send_message(text, ephemeral=True)
 
     @config_group.command(name="intro-channel", description="自己紹介チャンネルを設定")
@@ -430,6 +492,80 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             f"クールダウンを {seconds} 秒に更新しました。",
             ephemeral=True,
         )
+
+    exclude_group = app_commands.Group(
+        name="exclude-vc",
+        description="自動投稿しない VC を管理",
+        parent=config_group,
+    )
+
+    @exclude_group.command(name="add", description="自動投稿しない VC を追加")
+    @app_commands.describe(channel="自動投稿の対象から外す VC")
+    async def exclude_add(
+        interaction: discord.Interaction,
+        channel: discord.VoiceChannel,
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        existing = bot.configs.get(interaction.guild_id)
+        if existing is not None and channel.id in existing.excluded_vc_ids:
+            await interaction.response.send_message(
+                f"{channel.mention} は既に除外されています。",
+                ephemeral=True,
+            )
+            return
+        try:
+            cfg = await add_excluded_vc(bot.pool, interaction.guild_id, channel.id)
+        except Exception as e:
+            log.error("add_excluded_vc failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.configs[interaction.guild_id] = cfg
+        await interaction.response.send_message(
+            f"{channel.mention} を自動投稿の対象から外しました。",
+            ephemeral=True,
+        )
+
+    @exclude_group.command(name="remove", description="自動投稿しない VC から除外を解除")
+    @app_commands.describe(channel="除外を解除する VC")
+    async def exclude_remove(
+        interaction: discord.Interaction,
+        channel: discord.VoiceChannel,
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        existing = bot.configs.get(interaction.guild_id)
+        if existing is None or channel.id not in existing.excluded_vc_ids:
+            await interaction.response.send_message(
+                f"{channel.mention} は除外リストにありません。",
+                ephemeral=True,
+            )
+            return
+        try:
+            cfg = await remove_excluded_vc(bot.pool, interaction.guild_id, channel.id)
+        except Exception as e:
+            log.error("remove_excluded_vc failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        if cfg is None:
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.configs[interaction.guild_id] = cfg
+        await interaction.response.send_message(
+            f"{channel.mention} の除外を解除しました。",
+            ephemeral=True,
+        )
+
+    @exclude_group.command(name="list", description="自動投稿しない VC の一覧を表示")
+    async def exclude_list(interaction: discord.Interaction) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        cfg = bot.configs.get(interaction.guild_id)
+        if cfg is None or not cfg.excluded_vc_ids:
+            await interaction.response.send_message("除外 VC はありません。", ephemeral=True)
+            return
+        text = "除外 VC:\n" + "\n".join(f"- <#{cid}>" for cid in cfg.excluded_vc_ids)
+        await interaction.response.send_message(text, ephemeral=True)
 
     tree.add_command(config_group)
 
