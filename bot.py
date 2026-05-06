@@ -115,8 +115,10 @@ def build_embed(member: discord.Member, intro: discord.Message) -> discord.Embed
     return embed
 
 
-def _is_intro_post(message: discord.Message) -> bool:
+def _is_intro_post(message: discord.Message, member_id: int) -> bool:
     if not message.author.bot:
+        return False
+    if not any(getattr(u, "id", None) == member_id for u in message.mentions):
         return False
     for embed in message.embeds:
         for field in embed.fields:
@@ -125,10 +127,14 @@ def _is_intro_post(message: discord.Message) -> bool:
     return False
 
 
-async def _has_recent_intro_post(channel: discord.abc.Messageable, limit: int = RECENT_INTRO_SKIP_LIMIT) -> bool:
+async def _has_recent_intro_post(
+    channel: discord.abc.Messageable,
+    member_id: int,
+    limit: int = RECENT_INTRO_SKIP_LIMIT,
+) -> bool:
     try:
         async for msg in channel.history(limit=limit):
-            if _is_intro_post(msg):
+            if _is_intro_post(msg, member_id):
                 return True
     except discord.Forbidden:
         return False
@@ -302,9 +308,9 @@ class IntroBot(discord.Client):
                 self.last_posted_at.setdefault(member.guild.id, {})[member.id] = now
                 return
 
-            # 直近に自己紹介が流れている VC では再投稿を抑える。コマンド経由の
-            # /intro /intros は自前で history を見ないので影響を受けない
-            if await _has_recent_intro_post(target):
+            # 直近に同一ユーザーの自己紹介が流れている VC では再投稿を抑える。
+            # コマンド経由の /intro /intros は自前で history を見ないので影響を受けない
+            if await _has_recent_intro_post(target, member.id):
                 return
 
             try:
