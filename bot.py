@@ -16,7 +16,7 @@ if not _TOKENS_RAW:
     raise RuntimeError("set DISCORD_TOKEN (single) or DISCORD_TOKENS (comma-separated)")
 TOKENS = [t.strip() for t in _TOKENS_RAW.split(",") if t.strip()]
 DATABASE_URL = os.environ["DATABASE_URL"]
-DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "3600"))
+DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "60"))
 INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
 
 EMBED_DESCRIPTION_LIMIT = 4000
@@ -36,11 +36,11 @@ class GuildConfig:
 async def init_schema(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as con:
         await con.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS bot_config (
                 guild_id         BIGINT PRIMARY KEY,
                 intro_channel_id BIGINT,
-                cooldown_seconds INTEGER NOT NULL DEFAULT 3600 CHECK (cooldown_seconds BETWEEN 1 AND 86400),
+                cooldown_seconds INTEGER NOT NULL DEFAULT {DEFAULT_COOLDOWN_SECONDS} CHECK (cooldown_seconds BETWEEN 1 AND 86400),
                 updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
@@ -129,7 +129,8 @@ class IntroBot(discord.Client):
         self.pool = pool
         self.configs: dict[int, GuildConfig] = {}
         self.intro_message_id: dict[int, dict[int, int]] = {}
-        self.last_posted_at: dict[int, dict[int, float]] = {}
+        # クールダウンは (guild, user, channel) 単位。VC を跨いだ移動では独立して効く
+        self.last_posted_at: dict[int, dict[int, dict[int, float]]] = {}
         # 同一ユーザーの voice_state_update 並走中フラグ。クールダウンは
         # 送信成功時にのみ立てるため、await 中の二重投稿はこの集合で抑える
         self.in_flight: dict[int, set[int]] = {}
@@ -225,11 +226,6 @@ class IntroBot(discord.Client):
         if cfg is None or cfg.intro_channel_id is None:
             return
 
-        now = time.time()
-        last = self.last_posted_at.get(member.guild.id, {}).get(member.id, 0.0)
-        if now - last < cfg.cooldown_seconds:
-            return
-
         # in-flight 判定 → 登録は同期で完了させる(間に await を挟まない)。
         # これで自動部屋作成時の「ロビー参加 → 即移動」のような連続発火を
         # 二件目以降で弾ける
@@ -260,6 +256,17 @@ class IntroBot(discord.Client):
             if target is None or isinstance(target, discord.StageChannel):
                 return
 
+            # クールダウンは投稿先 VC 単位で持つ。target 確定後にチェックすることで
+            # ロビー → 別部屋へ移った場合も実際の投稿先に対して正しく判定できる
+            now = time.time()
+            last = (
+                self.last_posted_at.get(member.guild.id, {})
+                .get(member.id, {})
+                .get(target.id, 0.0)
+            )
+            if now - last < cfg.cooldown_seconds:
+                return
+
             try:
                 await target.send(
                     content=f"{member.mention} が参加しました",
@@ -274,7 +281,7 @@ class IntroBot(discord.Client):
                 return
 
             # 送信が成功した場合のみクールダウンを確定させる
-            self.last_posted_at.setdefault(member.guild.id, {})[member.id] = now
+            self.last_posted_at.setdefault(member.guild.id, {}).setdefault(member.id, {})[target.id] = now
         finally:
             in_flight.discard(member.id)
 
