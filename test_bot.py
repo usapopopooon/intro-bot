@@ -50,48 +50,23 @@ def test_pick_image_empty():
     assert bot._pick_image_attachment([]) is None
 
 
-def _msg(
-    *,
-    bot_author: bool,
-    field_names: list[str] | None = None,
-    embeds: int = 1,
-    mention_ids: list[int] | None = None,
-):
+def _msg(*, bot_author: bool, field_names: list[str] | None = None, embeds: int = 1):
     fields = [SimpleNamespace(name=n) for n in (field_names or [])]
     embed_list = [SimpleNamespace(fields=fields) for _ in range(embeds)]
-    mentions = [SimpleNamespace(id=mid) for mid in (mention_ids or [])]
-    return SimpleNamespace(
-        author=SimpleNamespace(bot=bot_author),
-        embeds=embed_list,
-        mentions=mentions,
-    )
+    return SimpleNamespace(author=SimpleNamespace(bot=bot_author), embeds=embed_list)
 
 
-def test_is_intro_post_matches_bot_with_intro_field_for_same_user():
-    msg = _msg(bot_author=True, field_names=["自己紹介"], mention_ids=[42])
-    assert bot._is_intro_post(msg, 42) is True
-
-
-def test_is_intro_post_rejects_when_mentioned_user_differs():
-    msg = _msg(bot_author=True, field_names=["自己紹介"], mention_ids=[99])
-    assert bot._is_intro_post(msg, 42) is False
-
-
-def test_is_intro_post_rejects_when_no_user_mentioned():
-    msg = _msg(bot_author=True, field_names=["自己紹介"], mention_ids=[])
-    assert bot._is_intro_post(msg, 42) is False
+def test_is_intro_post_matches_bot_with_intro_field():
+    assert bot._is_intro_post(_msg(bot_author=True, field_names=["自己紹介"])) is True
 
 
 def test_is_intro_post_rejects_human_author():
-    msg = _msg(bot_author=False, field_names=["自己紹介"], mention_ids=[42])
-    assert bot._is_intro_post(msg, 42) is False
+    assert bot._is_intro_post(_msg(bot_author=False, field_names=["自己紹介"])) is False
 
 
 def test_is_intro_post_rejects_bot_without_intro_field():
-    msg = _msg(bot_author=True, field_names=["other"], mention_ids=[42])
-    assert bot._is_intro_post(msg, 42) is False
+    assert bot._is_intro_post(_msg(bot_author=True, field_names=["other"])) is False
 
 
 def test_is_intro_post_rejects_bot_with_no_embeds():
-    msg = _msg(bot_author=True, embeds=0, mention_ids=[42])
-    assert bot._is_intro_post(msg, 42) is False
+    assert bot._is_intro_post(_msg(bot_author=True, embeds=0)) is False
