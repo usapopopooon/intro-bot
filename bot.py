@@ -40,7 +40,8 @@ async def init_schema(pool: asyncpg.Pool) -> None:
             CREATE TABLE IF NOT EXISTS bot_config (
                 guild_id         BIGINT PRIMARY KEY,
                 intro_channel_id BIGINT,
-                cooldown_seconds INTEGER NOT NULL DEFAULT {DEFAULT_COOLDOWN_SECONDS} CHECK (cooldown_seconds BETWEEN 1 AND 86400),
+                cooldown_seconds INTEGER NOT NULL DEFAULT {DEFAULT_COOLDOWN_SECONDS}
+                                 CHECK (cooldown_seconds BETWEEN 1 AND 86400),
                 updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
