@@ -26,7 +26,7 @@ Bot ページで以下の **Privileged Gateway Intents** を有効化する。
 | `DISCORD_TOKEN` | △ | — | Bot トークン(単一)。`DISCORD_TOKENS` が無いときに使われる |
 | `DISCORD_TOKENS` | △ | — | カンマ区切りで複数トークンを並列起動。設定があればこちらが優先される |
 | `DATABASE_URL` | ✅ | — | Postgres 接続文字列(Compose / Railway では自動注入) |
-| `COOLDOWN_SECONDS` | — | `300` | 新規ギルドのデフォルトクールダウン秒数(以降は `/intro-config cooldown` で変更) |
+| `COOLDOWN_SECONDS` | — | `3600` | 新規ギルドのデフォルトクールダウン秒数(以降は `/intro-config cooldown` で変更) |
 | `INTRO_HISTORY_MAX_SCAN` | — | `5000` | 履歴走査の最大件数 |
 
 `DISCORD_TOKEN` か `DISCORD_TOKENS` のどちらかが必須。両方ある場合は `DISCORD_TOKENS` が使われる。
