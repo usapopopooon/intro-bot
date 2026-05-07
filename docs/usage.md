@@ -37,6 +37,7 @@ intro-bot の運用ガイド。Bot 招待後の設定方法、メンバー目線
 | 同一 VC 内でミュート/配信開始/カメラ ON 等 | — |
 | ステージチャンネルへ入室 | — (対象外) |
 | `/intro-config exclude-vc` で除外した VC へ入室 | — (対象外) |
+| 自己紹介未登録者が `/intro-config nudge-exempt-role` のロールを持つ | 埋め込みは投稿されない / 未記入リマインドも飛ばない |
 
 ### クールダウン
 
@@ -87,6 +88,7 @@ intro-bot の運用ガイド。Bot 招待後の設定方法、メンバー目線
 intro_channel: #自己紹介
 cooldown_seconds: 60
 excluded_vcs: #ロビー, #作業部屋
+nudge_exempt_roles: @ゲスト, @Bot運用
 ```
 
 ### `/intro-config intro-channel <channel>`
@@ -122,6 +124,23 @@ excluded_vcs: #ロビー, #作業部屋
 ### `/intro-config exclude-vc list`
 
 現在このギルドで除外している VC の一覧を ephemeral で表示する。除外がない場合は「除外 VC はありません。」と返る。
+
+### `/intro-config nudge-exempt-role add <role>`
+
+自己紹介が未記入のメンバーが VC に入室した際の催促メッセージを、指定ロールを持つメンバーに対して送らないようにする。
+
+- 自己紹介が **登録済み** のメンバーには影響しない(従来通り埋め込みが投稿される)
+- 複数のロールを登録可能で、いずれかのロールを持っていれば催促はスキップされる
+- すでに除外済みのロールを指定した場合は ephemeral で通知されるだけで状態は変わらない
+- 設定内容は DB(`bot_config.nudge_exempt_role_ids`)に永続化される
+
+### `/intro-config nudge-exempt-role remove <role>`
+
+`nudge-exempt-role add` で外したロールを催促の対象に戻す。除外リストに含まれていないロールを指定した場合は ephemeral で通知される。
+
+### `/intro-config nudge-exempt-role list`
+
+現在このギルドで催促を送らないロールの一覧を ephemeral で表示する。設定がない場合は「除外ロールはありません。」と返る。
 
 ## トラブルシューティング
 

@@ -32,9 +32,10 @@ class GuildConfig:
     intro_channel_id: int | None
     cooldown_seconds: int
     excluded_vc_ids: frozenset[int]
+    nudge_exempt_role_ids: frozenset[int]
 
 
-_SELECT_COLUMNS = "guild_id, intro_channel_id, cooldown_seconds, excluded_vc_ids"
+_SELECT_COLUMNS = "guild_id, intro_channel_id, cooldown_seconds, excluded_vc_ids, nudge_exempt_role_ids"
 
 
 def _row_to_config(row) -> GuildConfig:
@@ -43,6 +44,7 @@ def _row_to_config(row) -> GuildConfig:
         intro_channel_id=row["intro_channel_id"],
         cooldown_seconds=row["cooldown_seconds"],
         excluded_vc_ids=frozenset(row["excluded_vc_ids"] or ()),
+        nudge_exempt_role_ids=frozenset(row["nudge_exempt_role_ids"] or ()),
     )
 
 
@@ -56,12 +58,16 @@ async def init_schema(pool: asyncpg.Pool) -> None:
                 cooldown_seconds INTEGER NOT NULL DEFAULT {DEFAULT_COOLDOWN_SECONDS}
                                  CHECK (cooldown_seconds BETWEEN 1 AND 86400),
                 excluded_vc_ids  BIGINT[] NOT NULL DEFAULT '{{}}',
+                nudge_exempt_role_ids BIGINT[] NOT NULL DEFAULT '{{}}',
                 updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
         )
         await con.execute(
             "ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS excluded_vc_ids BIGINT[] NOT NULL DEFAULT '{}'"
+        )
+        await con.execute(
+            "ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS nudge_exempt_role_ids BIGINT[] NOT NULL DEFAULT '{}'"
         )
 
 
@@ -135,6 +141,41 @@ async def remove_excluded_vc(pool: asyncpg.Pool, guild_id: int, channel_id: int)
             """,
             guild_id,
             channel_id,
+        )
+    return _row_to_config(row) if row is not None else None
+
+
+async def add_nudge_exempt_role(pool: asyncpg.Pool, guild_id: int, role_id: int) -> GuildConfig:
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            f"""
+            INSERT INTO bot_config (guild_id, intro_channel_id, cooldown_seconds, nudge_exempt_role_ids)
+            VALUES ($1, NULL, $2, ARRAY[$3]::BIGINT[])
+            ON CONFLICT (guild_id) DO UPDATE
+            SET nudge_exempt_role_ids = (
+                SELECT COALESCE(ARRAY_AGG(DISTINCT v), '{{}}'::BIGINT[])
+                FROM UNNEST(bot_config.nudge_exempt_role_ids || ARRAY[$3]::BIGINT[]) AS v
+            ), updated_at = NOW()
+            RETURNING {_SELECT_COLUMNS}
+            """,
+            guild_id,
+            DEFAULT_COOLDOWN_SECONDS,
+            role_id,
+        )
+    return _row_to_config(row)
+
+
+async def remove_nudge_exempt_role(pool: asyncpg.Pool, guild_id: int, role_id: int) -> GuildConfig | None:
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            f"""
+            UPDATE bot_config
+            SET nudge_exempt_role_ids = array_remove(nudge_exempt_role_ids, $2), updated_at = NOW()
+            WHERE guild_id = $1
+            RETURNING {_SELECT_COLUMNS}
+            """,
+            guild_id,
+            role_id,
         )
     return _row_to_config(row) if row is not None else None
 
@@ -317,6 +358,9 @@ class IntroBot(discord.Client):
                 return
 
             if intro is None:
+                # 管理者が指定したロールを持つメンバーには催促を送らない
+                if cfg.nudge_exempt_role_ids and any(r.id in cfg.nudge_exempt_role_ids for r in member.roles):
+                    return
                 # 自己紹介がまだ書かれていないユーザーにはメンション付きで記入を促す
                 try:
                     await target.send(
@@ -440,15 +484,22 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
         cfg = bot.configs.get(interaction.guild_id)
         if cfg is None:
             text = (
-                f"intro_channel: 未設定\ncooldown_seconds: {DEFAULT_COOLDOWN_SECONDS}(デフォルト)\nexcluded_vcs: なし"
+                f"intro_channel: 未設定\n"
+                f"cooldown_seconds: {DEFAULT_COOLDOWN_SECONDS}(デフォルト)\n"
+                "excluded_vcs: なし\n"
+                "nudge_exempt_roles: なし"
             )
         else:
             channel_text = f"<#{cfg.intro_channel_id}>" if cfg.intro_channel_id else "未設定"
             excluded_text = ", ".join(f"<#{cid}>" for cid in cfg.excluded_vc_ids) if cfg.excluded_vc_ids else "なし"
+            exempt_text = (
+                ", ".join(f"<@&{rid}>" for rid in cfg.nudge_exempt_role_ids) if cfg.nudge_exempt_role_ids else "なし"
+            )
             text = (
                 f"intro_channel: {channel_text}\n"
                 f"cooldown_seconds: {cfg.cooldown_seconds}\n"
-                f"excluded_vcs: {excluded_text}"
+                f"excluded_vcs: {excluded_text}\n"
+                f"nudge_exempt_roles: {exempt_text}"
             )
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -566,6 +617,88 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             return
         text = "除外 VC:\n" + "\n".join(f"- <#{cid}>" for cid in cfg.excluded_vc_ids)
         await interaction.response.send_message(text, ephemeral=True)
+
+    nudge_exempt_group = app_commands.Group(
+        name="nudge-exempt-role",
+        description="自己紹介未記入でも催促を送らないロールを管理",
+        parent=config_group,
+    )
+
+    @nudge_exempt_group.command(name="add", description="催促を送らないロールを追加")
+    @app_commands.describe(role="催促の対象から外すロール")
+    async def nudge_exempt_add(
+        interaction: discord.Interaction,
+        role: discord.Role,
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        existing = bot.configs.get(interaction.guild_id)
+        if existing is not None and role.id in existing.nudge_exempt_role_ids:
+            await interaction.response.send_message(
+                f"{role.mention} は既に除外されています。",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        try:
+            cfg = await add_nudge_exempt_role(bot.pool, interaction.guild_id, role.id)
+        except Exception as e:
+            log.error("add_nudge_exempt_role failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.configs[interaction.guild_id] = cfg
+        await interaction.response.send_message(
+            f"{role.mention} を催促の対象から外しました。",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @nudge_exempt_group.command(name="remove", description="催促ロール除外を解除")
+    @app_commands.describe(role="除外を解除するロール")
+    async def nudge_exempt_remove(
+        interaction: discord.Interaction,
+        role: discord.Role,
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        existing = bot.configs.get(interaction.guild_id)
+        if existing is None or role.id not in existing.nudge_exempt_role_ids:
+            await interaction.response.send_message(
+                f"{role.mention} は除外リストにありません。",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        try:
+            cfg = await remove_nudge_exempt_role(bot.pool, interaction.guild_id, role.id)
+        except Exception as e:
+            log.error("remove_nudge_exempt_role failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        if cfg is None:
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.configs[interaction.guild_id] = cfg
+        await interaction.response.send_message(
+            f"{role.mention} の除外を解除しました。",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @nudge_exempt_group.command(name="list", description="催促を送らないロールの一覧を表示")
+    async def nudge_exempt_list(interaction: discord.Interaction) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        cfg = bot.configs.get(interaction.guild_id)
+        if cfg is None or not cfg.nudge_exempt_role_ids:
+            await interaction.response.send_message("除外ロールはありません。", ephemeral=True)
+            return
+        text = "催促を送らないロール:\n" + "\n".join(f"- <@&{rid}>" for rid in cfg.nudge_exempt_role_ids)
+        await interaction.response.send_message(
+            text,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     tree.add_command(config_group)
 
