@@ -264,8 +264,7 @@ class IntroBot(discord.Client):
             except discord.Forbidden:
                 raise
             except discord.HTTPException as e:
-                log.warning("fetch_message failed for %s: %s; skipping history scan", cached, e)
-                return None
+                log.warning("fetch_message failed for %s: %s; falling back to history scan", cached, e)
 
         async for msg in intro_channel.history(limit=INTRO_HISTORY_MAX_SCAN, oldest_first=False):
             if msg.author.id == user_id and msg.content.strip():
