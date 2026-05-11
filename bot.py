@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 
+import aiohttp
 import asyncpg
 import discord
 from discord import app_commands
@@ -18,6 +19,9 @@ TOKENS = [t.strip() for t in _TOKENS_RAW.split(",") if t.strip()]
 DATABASE_URL = os.environ["DATABASE_URL"]
 DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "60"))
 INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
+LEVEL_API_BASE = (os.environ.get("LEVEL_API_BASE") or "").rstrip("/")
+LEVEL_API_TIMEOUT_SECONDS = float(os.environ.get("LEVEL_API_TIMEOUT_SECONDS", "3"))
+EXTERNAL_API_KEY = (os.environ.get("EXTERNAL_API_KEY") or "").strip()
 
 EMBED_DESCRIPTION_LIMIT = 4000
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -193,7 +197,11 @@ def _pick_image_attachment(attachments):
     return None
 
 
-def build_embed(member: discord.Member, intro: discord.Message) -> discord.Embed:
+def build_embed(
+    member: discord.Member,
+    intro: discord.Message,
+    level_info: tuple[int, float] | None = None,
+) -> discord.Embed:
     embed = discord.Embed(
         description=truncate(intro.content, EMBED_DESCRIPTION_LIMIT),
         timestamp=intro.created_at,
@@ -204,7 +212,39 @@ def build_embed(member: discord.Member, intro: discord.Message) -> discord.Embed
     img = _pick_image_attachment(intro.attachments)
     if img is not None:
         embed.set_image(url=img.url)
+    if level_info is not None:
+        level, progress = level_info
+        embed.set_footer(text=f"Lv. {level} ({int(progress * 100)}%)")
     return embed
+
+
+async def fetch_user_level(
+    session: aiohttp.ClientSession | None, guild_id: int, user_id: int
+) -> tuple[int, float] | None:
+    """level-bot の API から total レベルと進捗を取得。失敗時は None。"""
+    if session is None or not LEVEL_API_BASE:
+        return None
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/users/{user_id}/levels"
+    headers = {"Authorization": f"Bearer {EXTERNAL_API_KEY}"} if EXTERNAL_API_KEY else None
+    try:
+        async with session.get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+    except (aiohttp.ClientError, TimeoutError):
+        return None
+    total = data.get("total") if isinstance(data, dict) else None
+    if not isinstance(total, dict):
+        return None
+    level = total.get("level")
+    progress = total.get("progress")
+    if not isinstance(level, int) or not isinstance(progress, (int, float)):
+        return None
+    return level, float(progress)
 
 
 def _make_intents() -> discord.Intents:
@@ -228,12 +268,19 @@ class IntroBot(discord.Client):
         # 同一ユーザーの voice_state_update 並走中フラグ。クールダウンは
         # 送信成功時にのみ立てるため、await 中の二重投稿はこの集合で抑える
         self.in_flight: dict[int, set[int]] = {}
+        self.http_session: aiohttp.ClientSession | None = None
         register_commands(self.tree, self)
 
     async def setup_hook(self) -> None:
+        self.http_session = aiohttp.ClientSession()
         self.configs = await load_all_configs(self.pool)
         log.info("loaded %d guild configs", len(self.configs))
         await self.tree.sync()
+
+    async def close(self) -> None:
+        if self.http_session is not None and not self.http_session.closed:
+            await self.http_session.close()
+        await super().close()
 
     def resolve_intro_channel(self, guild_id: int) -> discord.TextChannel | None:
         cfg = self.configs.get(guild_id)
@@ -378,10 +425,11 @@ class IntroBot(discord.Client):
                 self.last_posted_at.setdefault(member.guild.id, {}).setdefault(member.id, {})[target.id] = now
                 return
 
+            level_info = await fetch_user_level(self.http_session, member.guild.id, member.id)
             try:
                 await target.send(
                     content=f"{member.mention} が参加しました",
-                    embed=build_embed(member, intro),
+                    embed=build_embed(member, intro, level_info=level_info),
                     allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
                 )
             except discord.Forbidden:
@@ -421,7 +469,7 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             return
 
         await interaction.response.defer()
-        embeds: list[discord.Embed] = []
+        pairs: list[tuple[discord.Member, discord.Message]] = []
         missing: list[discord.Member] = []
         for m in members:
             try:
@@ -432,11 +480,16 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             if intro is None:
                 missing.append(m)
             else:
-                embeds.append(build_embed(m, intro))
+                pairs.append((m, intro))
 
-        if not embeds:
+        if not pairs:
             await interaction.followup.send("VC のメンバーに自己紹介はまだ投稿されていません。")
             return
+
+        level_infos = await asyncio.gather(
+            *(fetch_user_level(bot.http_session, interaction.guild_id, m.id) for m, _ in pairs)
+        )
+        embeds = [build_embed(m, intro, level_info=lv) for (m, intro), lv in zip(pairs, level_infos, strict=True)]
         for i in range(0, len(embeds), 10):
             await interaction.followup.send(embeds=embeds[i : i + 10])
         if missing:
@@ -467,7 +520,8 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=build_embed(user, intro_msg))
+        level_info = await fetch_user_level(bot.http_session, interaction.guild_id, user.id)
+        await interaction.followup.send(embed=build_embed(user, intro_msg, level_info=level_info))
 
     config_group = app_commands.Group(
         name="intro-config",
