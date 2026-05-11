@@ -21,6 +21,7 @@ DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "60"))
 INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
 LEVEL_API_BASE = (os.environ.get("LEVEL_API_BASE") or "").rstrip("/")
 LEVEL_API_TIMEOUT_SECONDS = float(os.environ.get("LEVEL_API_TIMEOUT_SECONDS", "3"))
+LEVEL_CACHE_TTL_SECONDS = float(os.environ.get("LEVEL_CACHE_TTL_SECONDS", "60"))
 EXTERNAL_API_KEY = (os.environ.get("EXTERNAL_API_KEY") or "").strip()
 
 EMBED_DESCRIPTION_LIMIT = 4000
@@ -218,6 +219,17 @@ def build_embed(
     return embed
 
 
+async def _drain_cancelled(task: asyncio.Task) -> None:
+    """完了済みなら何もしない。pending ならキャンセルして結果を回収する。"""
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def fetch_user_level(
     session: aiohttp.ClientSession | None, guild_id: int, user_id: int
 ) -> tuple[int, float] | None:
@@ -269,6 +281,8 @@ class IntroBot(discord.Client):
         # 送信成功時にのみ立てるため、await 中の二重投稿はこの集合で抑える
         self.in_flight: dict[int, set[int]] = {}
         self.http_session: aiohttp.ClientSession | None = None
+        # (guild_id, user_id) -> (level_info, expiry_monotonic)
+        self.level_cache: dict[tuple[int, int], tuple[tuple[int, float] | None, float]] = {}
         register_commands(self.tree, self)
 
     async def setup_hook(self) -> None:
@@ -281,6 +295,17 @@ class IntroBot(discord.Client):
         if self.http_session is not None and not self.http_session.closed:
             await self.http_session.close()
         await super().close()
+
+    async def get_user_level(self, guild_id: int, user_id: int) -> tuple[int, float] | None:
+        """TTL 付きキャッシュ経由でレベルを取得。連続 VC ジョインの再 fetch を抑える。"""
+        now = time.monotonic()
+        key = (guild_id, user_id)
+        cached = self.level_cache.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        value = await fetch_user_level(self.http_session, guild_id, user_id)
+        self.level_cache[key] = (value, now + LEVEL_CACHE_TTL_SECONDS)
+        return value
 
     def resolve_intro_channel(self, guild_id: int) -> discord.TextChannel | None:
         cfg = self.configs.get(guild_id)
@@ -374,6 +399,11 @@ class IntroBot(discord.Client):
             return
         in_flight.add(member.id)
 
+        # レベル取得は intro 検索と並行に走らせ、送信前に await で合流する。
+        # 送信に至らない経路 (intro 未登録 / 除外 VC / クールダウン中) では
+        # finally でキャンセルする。キャッシュヒット時は即完了する
+        level_task = asyncio.create_task(self.get_user_level(member.guild.id, member.id))
+
         try:
             intro_channel = self.resolve_intro_channel(member.guild.id)
             if intro_channel is None:
@@ -425,7 +455,7 @@ class IntroBot(discord.Client):
                 self.last_posted_at.setdefault(member.guild.id, {}).setdefault(member.id, {})[target.id] = now
                 return
 
-            level_info = await fetch_user_level(self.http_session, member.guild.id, member.id)
+            level_info = await level_task
             try:
                 await target.send(
                     content=f"{member.mention} が参加しました",
@@ -442,6 +472,7 @@ class IntroBot(discord.Client):
             # 送信が成功した場合のみクールダウンを確定させる
             self.last_posted_at.setdefault(member.guild.id, {}).setdefault(member.id, {})[target.id] = now
         finally:
+            await _drain_cancelled(level_task)
             in_flight.discard(member.id)
 
 
@@ -486,9 +517,7 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             await interaction.followup.send("VC のメンバーに自己紹介はまだ投稿されていません。")
             return
 
-        level_infos = await asyncio.gather(
-            *(fetch_user_level(bot.http_session, interaction.guild_id, m.id) for m, _ in pairs)
-        )
+        level_infos = await asyncio.gather(*(bot.get_user_level(interaction.guild_id, m.id) for m, _ in pairs))
         embeds = [build_embed(m, intro, level_info=lv) for (m, intro), lv in zip(pairs, level_infos, strict=True)]
         for i in range(0, len(embeds), 10):
             await interaction.followup.send(embeds=embeds[i : i + 10])
@@ -520,7 +549,7 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
                 ephemeral=True,
             )
             return
-        level_info = await fetch_user_level(bot.http_session, interaction.guild_id, user.id)
+        level_info = await bot.get_user_level(interaction.guild_id, user.id)
         await interaction.followup.send(embed=build_embed(user, intro_msg, level_info=level_info))
 
     config_group = app_commands.Group(
