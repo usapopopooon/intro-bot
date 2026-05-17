@@ -69,7 +69,7 @@ intro-bot の運用ガイド。Bot 招待後の設定方法、メンバー目線
 環境変数 `USER_STATS_SITE_GUILD_ID` と `USER_STATS_SITE_BASE_URL` を設定すると、対象ギルドの自己紹介埋め込みに `/level` と同じ **30日間の統計リンク** が追加される。
 
 - リンク先は `{USER_STATS_SITE_BASE_URL}/{user_id}?days=30`
-- 自動投稿 / `/intro` では embed 内リンクに加えて「ユーザー統計を開く」ボタンも表示される
+- 自動投稿 / `/intro` では「ユーザー統計を開く」ボタンが表示される
 - `/intros` は複数人をまとめて送るため、各 embed 内リンクのみ表示される
 - `USER_STATS_SITE_GUILD_ID` と投稿先ギルド ID が一致しない場合、リンクは表示されない
 

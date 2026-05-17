@@ -220,6 +220,7 @@ def build_embed(
     member: discord.Member,
     intro: discord.Message,
     level_info: tuple[int, float] | None = None,
+    include_stats_link: bool = True,
 ) -> discord.Embed:
     embed = discord.Embed(
         description=truncate(intro.content, EMBED_DESCRIPTION_LIMIT),
@@ -228,8 +229,8 @@ def build_embed(
     )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     embed.add_field(name="自己紹介", value=f"[ジャンプ]({intro.jump_url})", inline=True)
-    stats_url = build_user_stats_url(member.guild.id, member.id)
-    if stats_url is not None:
+    stats_url = build_user_stats_url(member.guild.id, member.id) if include_stats_link else None
+    if stats_url:
         embed.add_field(name="詳細", value=f"[30日間の統計を見る]({stats_url})", inline=True)
     img = _pick_image_attachment(intro.attachments)
     if img is not None:
@@ -481,7 +482,7 @@ class IntroBot(discord.Client):
                 stats_url = build_user_stats_url(member.guild.id, member.id)
                 await target.send(
                     content=f"{member.mention} が参加しました",
-                    embed=build_embed(member, intro, level_info=level_info),
+                    embed=build_embed(member, intro, level_info=level_info, include_stats_link=False),
                     view=build_user_stats_view(stats_url),
                     allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
                 )
@@ -575,7 +576,7 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
         level_info = await bot.get_user_level(interaction.guild_id, user.id)
         stats_url = build_user_stats_url(interaction.guild_id, user.id)
         await interaction.followup.send(
-            embed=build_embed(user, intro_msg, level_info=level_info),
+            embed=build_embed(user, intro_msg, level_info=level_info, include_stats_link=False),
             view=build_user_stats_view(stats_url),
         )
 
