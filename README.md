@@ -5,7 +5,7 @@ Discord でユーザーが VC に入室すると、自己紹介チャンネル�
 - 招待されたすべてのギルドで動作する(マルチギルド対応)
 - 1 プロセスで複数の Bot トークンを並列起動可能
 - ギルドごとの設定(自己紹介チャンネル / クールダウン)は Postgres に永続化
-- 任意で [level-bot](../level-bot) 連携: 埋め込み footer に総合レベルを表示
+- 任意で [level-bot](../level-bot) 連携: 埋め込み footer に総合レベルを表示し、ユーザー統計サイトへのリンクを追加
 - 運用 / 管理者向けの使い方: [docs/usage.md](docs/usage.md)
 
 ## 必要なもの
@@ -32,6 +32,8 @@ Bot ページで以下の **Privileged Gateway Intents** を有効化する。
 | `LEVEL_API_BASE` | — | (空) | level-bot の Base URL。**空ならレベル取得は無効**(footer なし) |
 | `LEVEL_API_TIMEOUT_SECONDS` | — | `3` | level-bot へのリクエストタイムアウト秒数 |
 | `LEVEL_CACHE_TTL_SECONDS` | — | `60` | 取得したレベルをプロセス内でキャッシュする秒数 |
+| `USER_STATS_SITE_GUILD_ID` | — | (空) | ユーザー統計サイトへのリンクを表示する対象ギルド ID |
+| `USER_STATS_SITE_BASE_URL` | — | (空) | `/level` と同じユーザー統計サイトの Base URL。`/<user_id>?days=30` を付けてリンクする |
 | `EXTERNAL_API_KEY` | — | (空) | level-bot 側で外部 API キー認証が有効な場合のみ設定。`Authorization: Bearer <key>` で送信される |
 
 `DISCORD_TOKEN` か `DISCORD_TOKENS` のどちらかが必須。両方ある場合は `DISCORD_TOKENS` が使われる。

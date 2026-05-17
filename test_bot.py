@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import bot
@@ -48,6 +49,44 @@ def test_pick_image_returns_first_match():
 
 def test_pick_image_empty():
     assert bot._pick_image_attachment([]) is None
+
+
+def test_build_user_stats_url_requires_config(monkeypatch):
+    monkeypatch.setattr(bot, "USER_STATS_SITE_BASE_URL", "")
+    monkeypatch.setattr(bot, "USER_STATS_SITE_GUILD_ID", "42")
+
+    assert bot.build_user_stats_url(42, 100) is None
+
+
+def test_build_user_stats_url_requires_matching_guild(monkeypatch):
+    monkeypatch.setattr(bot, "USER_STATS_SITE_BASE_URL", "https://stats.example.com/users")
+    monkeypatch.setattr(bot, "USER_STATS_SITE_GUILD_ID", "42")
+
+    assert bot.build_user_stats_url(43, 100) is None
+
+
+def test_build_user_stats_url_adds_user_and_days(monkeypatch):
+    monkeypatch.setattr(bot, "USER_STATS_SITE_BASE_URL", "https://stats.example.com/users")
+    monkeypatch.setattr(bot, "USER_STATS_SITE_GUILD_ID", "42")
+
+    assert bot.build_user_stats_url(42, 100) == "https://stats.example.com/users/100?days=30"
+
+
+def test_build_user_stats_view_none_without_url():
+    assert bot.build_user_stats_view(None) is None
+
+
+def test_build_user_stats_view_contains_link_button():
+    async def build_view():
+        return bot.build_user_stats_view("https://stats.example.com/users/100?days=30")
+
+    view = asyncio.run(build_view())
+
+    assert view is not None
+    assert len(view.children) == 1
+    button = view.children[0]
+    assert button.label == "ユーザー統計を開く"
+    assert button.url == "https://stats.example.com/users/100?days=30"
 
 
 def _row(

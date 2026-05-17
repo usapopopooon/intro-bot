@@ -23,6 +23,8 @@ LEVEL_API_BASE = (os.environ.get("LEVEL_API_BASE") or "").rstrip("/")
 LEVEL_API_TIMEOUT_SECONDS = float(os.environ.get("LEVEL_API_TIMEOUT_SECONDS", "3"))
 LEVEL_CACHE_TTL_SECONDS = float(os.environ.get("LEVEL_CACHE_TTL_SECONDS", "60"))
 EXTERNAL_API_KEY = (os.environ.get("EXTERNAL_API_KEY") or "").strip()
+USER_STATS_SITE_GUILD_ID = (os.environ.get("USER_STATS_SITE_GUILD_ID") or "").strip()
+USER_STATS_SITE_BASE_URL = (os.environ.get("USER_STATS_SITE_BASE_URL") or "").strip().rstrip("/")
 
 EMBED_DESCRIPTION_LIMIT = 4000
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -198,6 +200,22 @@ def _pick_image_attachment(attachments):
     return None
 
 
+def build_user_stats_url(guild_id: int, user_id: int) -> str | None:
+    if not USER_STATS_SITE_BASE_URL or not USER_STATS_SITE_GUILD_ID:
+        return None
+    if str(guild_id) != USER_STATS_SITE_GUILD_ID:
+        return None
+    return f"{USER_STATS_SITE_BASE_URL}/{user_id}?days=30"
+
+
+def build_user_stats_view(stats_url: str | None) -> discord.ui.View | None:
+    if stats_url is None:
+        return None
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="ユーザー統計を開く", url=stats_url))
+    return view
+
+
 def build_embed(
     member: discord.Member,
     intro: discord.Message,
@@ -210,6 +228,9 @@ def build_embed(
     )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     embed.add_field(name="自己紹介", value=f"[ジャンプ]({intro.jump_url})", inline=True)
+    stats_url = build_user_stats_url(member.guild.id, member.id)
+    if stats_url is not None:
+        embed.add_field(name="詳細", value=f"[30日間の統計を見る]({stats_url})", inline=True)
     img = _pick_image_attachment(intro.attachments)
     if img is not None:
         embed.set_image(url=img.url)
@@ -457,9 +478,11 @@ class IntroBot(discord.Client):
 
             level_info = await level_task
             try:
+                stats_url = build_user_stats_url(member.guild.id, member.id)
                 await target.send(
                     content=f"{member.mention} が参加しました",
                     embed=build_embed(member, intro, level_info=level_info),
+                    view=build_user_stats_view(stats_url),
                     allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
                 )
             except discord.Forbidden:
@@ -550,7 +573,11 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             )
             return
         level_info = await bot.get_user_level(interaction.guild_id, user.id)
-        await interaction.followup.send(embed=build_embed(user, intro_msg, level_info=level_info))
+        stats_url = build_user_stats_url(interaction.guild_id, user.id)
+        await interaction.followup.send(
+            embed=build_embed(user, intro_msg, level_info=level_info),
+            view=build_user_stats_view(stats_url),
+        )
 
     config_group = app_commands.Group(
         name="intro-config",
