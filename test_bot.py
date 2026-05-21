@@ -72,6 +72,13 @@ def test_build_user_stats_url_adds_user_and_days(monkeypatch):
     assert bot.build_user_stats_url(42, 100) == "https://stats.example.com/u/100/level?days=30"
 
 
+def test_build_user_stats_url_does_not_duplicate_u_path(monkeypatch):
+    monkeypatch.setattr(bot, "USER_STATS_SITE_BASE_URL", "https://stats.example.com/u")
+    monkeypatch.setattr(bot, "USER_STATS_SITE_GUILD_ID", "42")
+
+    assert bot.build_user_stats_url(42, 100) == "https://stats.example.com/u/100/level?days=30"
+
+
 def test_build_user_stats_view_none_without_url():
     assert bot.build_user_stats_view(None) is None
 

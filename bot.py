@@ -205,7 +205,8 @@ def build_user_stats_url(guild_id: int, user_id: int) -> str | None:
         return None
     if str(guild_id) != USER_STATS_SITE_GUILD_ID:
         return None
-    return f"{USER_STATS_SITE_BASE_URL}/u/{user_id}/level?days=30"
+    base_url = USER_STATS_SITE_BASE_URL.removesuffix("/u")
+    return f"{base_url}/u/{user_id}/level?days=30"
 
 
 def build_user_stats_view(stats_url: str | None) -> discord.ui.View | None:
