@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock
 
+import api
 import bot
 
 
@@ -264,7 +264,7 @@ def test_parse_bearer_token():
     class Request:
         headers = {"Authorization": "Bearer secret"}
 
-    assert bot._parse_bearer_token(Request()) == "secret"
+    assert api.parse_bearer_token(Request()) == "secret"
 
 
 def test_parse_bearer_token_rejects_missing_or_wrong_scheme():
@@ -274,38 +274,14 @@ def test_parse_bearer_token_rejects_missing_or_wrong_scheme():
     class Basic:
         headers = {"Authorization": "Basic abc"}
 
-    assert bot._parse_bearer_token(Missing()) is None
-    assert bot._parse_bearer_token(Basic()) is None
-
-
-def test_intro_api_finds_client_by_guild():
-    owner = bot.IntroBot(None)
-    other = bot.IntroBot(None)
-    owner.get_guild = Mock(return_value=None)
-    guild = object()
-    other.get_guild = Mock(return_value=guild)
-    owner.api_clients = [owner, other]
-
-    assert owner.find_intro_api_client(123) is other
-
-
-def test_intro_api_ready_requires_all_clients_ready():
-    owner = bot.IntroBot(None)
-    other = bot.IntroBot(None)
-    owner.is_ready = Mock(return_value=True)
-    other.is_ready = Mock(return_value=False)
-    owner.api_clients = [owner, other]
-
-    assert owner.is_intro_api_ready() is False
-
-    other.is_ready = Mock(return_value=True)
-    assert owner.is_intro_api_ready() is True
+    assert api.parse_bearer_token(Missing()) is None
+    assert api.parse_bearer_token(Basic()) is None
 
 
 def test_intro_api_auth_failure_rate_limit(monkeypatch):
-    monkeypatch.setattr(bot, "INTRO_API_AUTH_FAILURE_LIMIT", 2)
-    monkeypatch.setattr(bot, "INTRO_API_AUTH_FAILURE_WINDOW_SECONDS", 60)
-    owner = bot.IntroBot(None)
+    monkeypatch.setattr(api, "INTRO_API_AUTH_FAILURE_LIMIT", 2)
+    monkeypatch.setattr(api, "INTRO_API_AUTH_FAILURE_WINDOW_SECONDS", 60)
+    app = {"auth_failures": {}}
 
     class Request:
         headers = {}
@@ -313,29 +289,29 @@ def test_intro_api_auth_failure_rate_limit(monkeypatch):
 
     request = Request()
 
-    assert owner.is_intro_api_auth_limited(request) is False
-    owner.record_intro_api_auth_failure(request)
-    assert owner.is_intro_api_auth_limited(request) is False
-    owner.record_intro_api_auth_failure(request)
-    assert owner.is_intro_api_auth_limited(request) is True
+    assert api.is_auth_limited(app, request) is False
+    api.record_auth_failure(app, request)
+    assert api.is_auth_limited(app, request) is False
+    api.record_auth_failure(app, request)
+    assert api.is_auth_limited(app, request) is True
 
 
 def test_build_cors_headers_disabled_without_config(monkeypatch):
-    monkeypatch.setattr(bot, "INTRO_API_CORS_ORIGINS", frozenset())
+    monkeypatch.setattr(api, "INTRO_API_CORS_ORIGINS", frozenset())
 
     class Request:
         headers = {"Origin": "https://example.com"}
 
-    assert bot.build_cors_headers(Request()) == {}
+    assert api.build_cors_headers(Request()) == {}
 
 
 def test_build_cors_headers_allows_configured_origin(monkeypatch):
-    monkeypatch.setattr(bot, "INTRO_API_CORS_ORIGINS", frozenset({"https://example.com"}))
+    monkeypatch.setattr(api, "INTRO_API_CORS_ORIGINS", frozenset({"https://example.com"}))
 
     class Request:
         headers = {"Origin": "https://example.com"}
 
-    headers = bot.build_cors_headers(Request())
+    headers = api.build_cors_headers(Request())
 
     assert headers["Access-Control-Allow-Origin"] == "https://example.com"
     assert headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
@@ -344,9 +320,9 @@ def test_build_cors_headers_allows_configured_origin(monkeypatch):
 
 
 def test_build_cors_headers_rejects_unconfigured_origin(monkeypatch):
-    monkeypatch.setattr(bot, "INTRO_API_CORS_ORIGINS", frozenset({"https://example.com"}))
+    monkeypatch.setattr(api, "INTRO_API_CORS_ORIGINS", frozenset({"https://example.com"}))
 
     class Request:
         headers = {"Origin": "https://evil.example"}
 
-    assert bot.build_cors_headers(Request()) == {}
+    assert api.build_cors_headers(Request()) == {}

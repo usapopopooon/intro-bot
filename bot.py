@@ -1,25 +1,20 @@
-from __future__ import annotations
-
 import asyncio
-import hmac
 import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 import aiohttp
 import asyncpg
 import discord
-from aiohttp import web
 from discord import app_commands
 from dotenv import load_dotenv
 
 load_dotenv()
 
 _TOKENS_RAW = os.environ.get("DISCORD_TOKENS") or os.environ.get("DISCORD_TOKEN")
-if not _TOKENS_RAW:
-    raise RuntimeError("set DISCORD_TOKEN (single) or DISCORD_TOKENS (comma-separated)")
 TOKENS = [t.strip() for t in _TOKENS_RAW.split(",") if t.strip()]
 DATABASE_URL = os.environ["DATABASE_URL"]
 DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "60"))
@@ -28,14 +23,6 @@ LEVEL_API_BASE = (os.environ.get("LEVEL_API_BASE") or "").rstrip("/")
 LEVEL_API_TIMEOUT_SECONDS = float(os.environ.get("LEVEL_API_TIMEOUT_SECONDS", "3"))
 LEVEL_CACHE_TTL_SECONDS = float(os.environ.get("LEVEL_CACHE_TTL_SECONDS", "60"))
 EXTERNAL_API_KEY = (os.environ.get("EXTERNAL_API_KEY") or "").strip()
-INTRO_API_KEY = (os.environ.get("INTRO_API_KEY") or EXTERNAL_API_KEY).strip()
-INTRO_API_HOST = os.environ.get("INTRO_API_HOST", "0.0.0.0")
-INTRO_API_PORT = int(os.environ.get("INTRO_API_PORT") or os.environ.get("PORT", "8000"))
-INTRO_API_AUTH_FAILURE_LIMIT = int(os.environ.get("INTRO_API_AUTH_FAILURE_LIMIT", "10"))
-INTRO_API_AUTH_FAILURE_WINDOW_SECONDS = float(os.environ.get("INTRO_API_AUTH_FAILURE_WINDOW_SECONDS", "60"))
-INTRO_API_CORS_ORIGINS = frozenset(
-    origin.strip() for origin in os.environ.get("INTRO_API_CORS_ORIGINS", "").split(",") if origin.strip()
-)
 USER_STATS_SITE_GUILD_ID = (os.environ.get("USER_STATS_SITE_GUILD_ID") or "").strip()
 USER_STATS_SITE_BASE_URL = (os.environ.get("USER_STATS_SITE_BASE_URL") or "").strip().rstrip("/")
 
@@ -76,6 +63,20 @@ class ChillDisplay:
     current: ChillPlace | None
     next_place: ChillPlace | None
     selected_locked: bool = False
+
+
+@dataclass(frozen=True)
+class IntroRecord:
+    guild_id: int
+    user_id: int
+    message_id: int
+    channel_id: int
+    content: str
+    jump_url: str
+    image_url: str | None
+    author_display_name: str
+    author_avatar_url: str
+    created_at: datetime
 
 
 DEFAULT_CHILL_PLACES: tuple[ChillPlace, ...] = (
@@ -164,6 +165,24 @@ async def init_schema(pool: asyncpg.Pool) -> None:
             )
             """
         )
+        await con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS intro_messages (
+                guild_id            BIGINT NOT NULL,
+                user_id             BIGINT NOT NULL,
+                message_id          BIGINT NOT NULL,
+                channel_id          BIGINT NOT NULL,
+                content             TEXT NOT NULL,
+                jump_url            TEXT NOT NULL,
+                image_url           TEXT,
+                author_display_name TEXT NOT NULL,
+                author_avatar_url   TEXT NOT NULL,
+                created_at          TIMESTAMPTZ NOT NULL,
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (guild_id, user_id)
+            )
+            """
+        )
 
 
 async def load_all_configs(pool: asyncpg.Pool) -> dict[int, GuildConfig]:
@@ -191,6 +210,31 @@ async def load_all_user_chill_levels(pool: asyncpg.Pool) -> dict[int, dict[int, 
     for row in rows:
         selections.setdefault(row["guild_id"], {})[row["user_id"]] = row["required_level"]
     return selections
+
+
+async def load_chill_place_overrides(pool: asyncpg.Pool, guild_id: int) -> dict[int, ChillPlaceOverride]:
+    async with pool.acquire() as con:
+        rows = await con.fetch(
+            "SELECT required_level, name, emoji FROM guild_chill_places WHERE guild_id = $1",
+            guild_id,
+        )
+    return {
+        row["required_level"]: ChillPlaceOverride(
+            name=row["name"],
+            emoji=row["emoji"],
+        )
+        for row in rows
+    }
+
+
+async def load_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int) -> int | None:
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            "SELECT required_level FROM user_chill_places WHERE guild_id = $1 AND user_id = $2",
+            guild_id,
+            user_id,
+        )
+    return row["required_level"] if row is not None else None
 
 
 async def upsert_chill_place(
@@ -246,6 +290,50 @@ async def clear_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int
             "DELETE FROM user_chill_places WHERE guild_id = $1 AND user_id = $2",
             guild_id,
             user_id,
+        )
+
+
+async def upsert_intro_record(pool: asyncpg.Pool, record: IntroRecord) -> None:
+    async with pool.acquire() as con:
+        await con.execute(
+            """
+            INSERT INTO intro_messages (
+                guild_id, user_id, message_id, channel_id, content, jump_url, image_url,
+                author_display_name, author_avatar_url, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (guild_id, user_id) DO UPDATE
+            SET message_id = EXCLUDED.message_id,
+                channel_id = EXCLUDED.channel_id,
+                content = EXCLUDED.content,
+                jump_url = EXCLUDED.jump_url,
+                image_url = EXCLUDED.image_url,
+                author_display_name = EXCLUDED.author_display_name,
+                author_avatar_url = EXCLUDED.author_avatar_url,
+                created_at = EXCLUDED.created_at,
+                updated_at = NOW()
+            WHERE intro_messages.created_at <= EXCLUDED.created_at
+            """,
+            record.guild_id,
+            record.user_id,
+            record.message_id,
+            record.channel_id,
+            record.content,
+            record.jump_url,
+            record.image_url,
+            record.author_display_name,
+            record.author_avatar_url,
+            record.created_at,
+        )
+
+
+async def delete_intro_record(pool: asyncpg.Pool, guild_id: int, user_id: int, message_id: int) -> None:
+    async with pool.acquire() as con:
+        await con.execute(
+            "DELETE FROM intro_messages WHERE guild_id = $1 AND user_id = $2 AND message_id = $3",
+            guild_id,
+            user_id,
+            message_id,
         )
 
 
@@ -435,6 +523,24 @@ def _pick_image_attachment(attachments):
     return None
 
 
+def build_intro_record(message: discord.Message) -> IntroRecord | None:
+    if message.guild is None or not message.content.strip():
+        return None
+    image = _pick_image_attachment(message.attachments)
+    return IntroRecord(
+        guild_id=message.guild.id,
+        user_id=message.author.id,
+        message_id=message.id,
+        channel_id=message.channel.id,
+        content=message.content,
+        jump_url=message.jump_url,
+        image_url=image.url if image is not None else None,
+        author_display_name=getattr(message.author, "display_name", message.author.name),
+        author_avatar_url=message.author.display_avatar.url,
+        created_at=message.created_at,
+    )
+
+
 def build_user_stats_url(guild_id: int, user_id: int) -> str | None:
     if not USER_STATS_SITE_BASE_URL or not USER_STATS_SITE_GUILD_ID:
         return None
@@ -450,10 +556,6 @@ def build_user_stats_view(stats_url: str | None) -> discord.ui.View | None:
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="ユーザー統計を開く", url=stats_url))
     return view
-
-
-def _isoformat(dt) -> str:
-    return dt.isoformat() if dt is not None else ""
 
 
 def serialize_chill_place(place: ChillPlace | None) -> dict | None:
@@ -478,59 +580,6 @@ def serialize_chill_display(display: ChillDisplay | None) -> dict | None:
         "selected_locked": display.selected_locked,
         "display_text": format_chill_display(display),
     }
-
-
-def _parse_bearer_token(request: web.Request) -> str | None:
-    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        return None
-    return token
-
-
-def verify_intro_api_request(request: web.Request) -> bool:
-    token = _parse_bearer_token(request)
-    return bool(token and INTRO_API_KEY and hmac.compare_digest(token, INTRO_API_KEY))
-
-
-def build_cors_headers(request: web.Request) -> dict[str, str]:
-    origin = request.headers.get("Origin")
-    if not origin or not INTRO_API_CORS_ORIGINS:
-        return {}
-    if "*" in INTRO_API_CORS_ORIGINS:
-        allowed_origin = "*"
-    elif origin in INTRO_API_CORS_ORIGINS:
-        allowed_origin = origin
-    else:
-        return {}
-    headers = {
-        "Access-Control-Allow-Origin": allowed_origin,
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Max-Age": "600",
-    }
-    if allowed_origin != "*":
-        headers["Vary"] = "Origin"
-    return headers
-
-
-@web.middleware
-async def intro_api_cors_middleware(request: web.Request, handler) -> web.StreamResponse:
-    if request.method == "OPTIONS":
-        response = web.Response(status=204)
-    else:
-        response = await handler(request)
-    response.headers.update(build_cors_headers(request))
-    return response
-
-
-def _request_ip(request: web.Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    peername = request.transport.get_extra_info("peername") if request.transport else None
-    if isinstance(peername, tuple) and peername:
-        return str(peername[0])
-    return "unknown"
 
 
 def build_embed(
@@ -611,14 +660,10 @@ def _make_intents() -> discord.Intents:
 
 
 class IntroBot(discord.Client):
-    def __init__(self, pool: asyncpg.Pool, *, enable_api: bool = False) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         super().__init__(intents=_make_intents())
         self.tree = app_commands.CommandTree(self)
         self.pool = pool
-        self.enable_api = enable_api
-        self.api_runner: web.AppRunner | None = None
-        self.api_clients: list[IntroBot] = [self]
-        self.api_auth_failures: dict[str, list[float]] = {}
         self.configs: dict[int, GuildConfig] = {}
         self.intro_message_id: dict[int, dict[int, int]] = {}
         # クールダウンは (guild, user, channel) 単位。VC を跨いだ移動では独立して効く
@@ -642,142 +687,9 @@ class IntroBot(discord.Client):
         await self.tree.sync()
 
     async def close(self) -> None:
-        if self.api_runner is not None:
-            await self.api_runner.cleanup()
-            self.api_runner = None
         if self.http_session is not None and not self.http_session.closed:
             await self.http_session.close()
         await super().close()
-
-    async def start_api_server(self) -> None:
-        app = web.Application(middlewares=[intro_api_cors_middleware])
-        app["bot"] = self
-        app.router.add_get("/healthz", self.handle_healthz)
-        app.router.add_get("/api/v1/guilds/{guild_id}/users/{user_id}/intro", self.handle_intro_api)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, INTRO_API_HOST, INTRO_API_PORT)
-        await site.start()
-        self.api_runner = runner
-        log.info("intro API listening on %s:%s", INTRO_API_HOST, INTRO_API_PORT)
-
-    async def handle_healthz(self, _request: web.Request) -> web.Response:
-        return web.json_response({"ok": True})
-
-    async def handle_intro_api(self, request: web.Request) -> web.Response:
-        if not verify_intro_api_request(request):
-            if self.is_intro_api_auth_limited(request):
-                return web.json_response({"detail": "Too Many Requests"}, status=429)
-            self.record_intro_api_auth_failure(request)
-            return web.json_response({"detail": "Unauthorized"}, status=401)
-        if not self.is_intro_api_ready():
-            return web.json_response({"detail": "Bot clients are not ready"}, status=503)
-        try:
-            guild_id = int(request.match_info["guild_id"])
-            user_id = int(request.match_info["user_id"])
-        except ValueError:
-            return web.json_response({"detail": "guild_id and user_id must be integers"}, status=400)
-        target = self.find_intro_api_client(guild_id)
-        if target is None:
-            return web.json_response({"detail": "Guild not found"}, status=404)
-        payload, status = await target.build_intro_api_payload(guild_id, user_id)
-        return web.json_response(payload, status=status)
-
-    def is_intro_api_ready(self) -> bool:
-        return all(client.is_ready() for client in self.api_clients)
-
-    def find_intro_api_client(self, guild_id: int) -> IntroBot | None:
-        for client in self.api_clients:
-            if client.get_guild(guild_id) is not None:
-                return client
-        return None
-
-    def is_intro_api_auth_limited(self, request: web.Request) -> bool:
-        now = time.monotonic()
-        ip = _request_ip(request)
-        failures = [t for t in self.api_auth_failures.get(ip, []) if now - t < INTRO_API_AUTH_FAILURE_WINDOW_SECONDS]
-        self.api_auth_failures[ip] = failures
-        return len(failures) >= INTRO_API_AUTH_FAILURE_LIMIT
-
-    def record_intro_api_auth_failure(self, request: web.Request) -> None:
-        now = time.monotonic()
-        ip = _request_ip(request)
-        failures = [t for t in self.api_auth_failures.get(ip, []) if now - t < INTRO_API_AUTH_FAILURE_WINDOW_SECONDS]
-        failures.append(now)
-        self.api_auth_failures[ip] = failures
-
-    async def build_intro_api_payload(self, guild_id: int, user_id: int) -> tuple[dict, int]:
-        guild = self.get_guild(guild_id)
-        if guild is None:
-            return {"detail": "Guild not found"}, 404
-
-        member = guild.get_member(user_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(user_id)
-            except discord.NotFound:
-                return {"detail": "Member not found"}, 404
-            except discord.Forbidden:
-                return {"detail": "Missing permission to fetch member"}, 403
-            except discord.HTTPException as e:
-                log.warning("fetch_member failed for guild=%s user=%s: %s", guild_id, user_id, e)
-                return {"detail": "Failed to fetch member"}, 502
-        if member.bot:
-            return {"detail": "Bot intros are not available"}, 404
-
-        intro_channel = self.resolve_intro_channel(guild_id)
-        if intro_channel is None:
-            return {"detail": "Intro channel is not configured or not visible"}, 404
-        try:
-            intro = await self.find_intro_message(guild_id, intro_channel, user_id)
-        except discord.Forbidden:
-            return {"detail": "Missing permission to read intro channel"}, 403
-        except discord.HTTPException as e:
-            log.warning("find_intro_message failed for guild=%s user=%s: %s", guild_id, user_id, e)
-            return {"detail": "Failed to fetch intro"}, 502
-        if intro is None:
-            return {"detail": "Intro not found"}, 404
-
-        level_info = await self.get_user_level(guild_id, user_id)
-        chill_display = await self.get_chill_display(guild_id, user_id, level_info)
-        image = _pick_image_attachment(intro.attachments)
-        stats_url = build_user_stats_url(guild_id, user_id)
-        level_payload = None
-        if level_info is not None:
-            level, progress = level_info
-            level_payload = {
-                "level": level,
-                "progress": progress,
-                "progress_percent": int(progress * 100),
-                "footer_text": f"Lv. {level} ({int(progress * 100)}%)",
-            }
-        return {
-            "guild_id": guild_id,
-            "user_id": user_id,
-            "member": {
-                "id": member.id,
-                "display_name": member.display_name,
-                "avatar_url": member.display_avatar.url,
-            },
-            "intro": {
-                "content": intro.content,
-                "content_truncated": truncate(intro.content, EMBED_DESCRIPTION_LIMIT),
-                "jump_url": intro.jump_url,
-                "message_id": intro.id,
-                "channel_id": intro.channel.id,
-                "created_at": _isoformat(intro.created_at),
-                "image_url": image.url if image is not None else None,
-            },
-            "level": level_payload,
-            "chill_place": serialize_chill_display(chill_display),
-            "stats_url": stats_url,
-            "display": {
-                "author_name": member.display_name,
-                "author_icon_url": member.display_avatar.url,
-                "intro_link_label": "ジャンプ",
-                "stats_link_label": "30日間の統計を見る" if stats_url else None,
-            },
-        }, 200
 
     async def get_user_level(self, guild_id: int, user_id: int) -> tuple[int, float] | None:
         """TTL 付きキャッシュ経由でレベルを取得。連続 VC ジョインの再 fetch を抑える。"""
@@ -829,7 +741,11 @@ class IntroBot(discord.Client):
         cached = self._cache_get(guild_id, user_id)
         if cached is not None:
             try:
-                return await intro_channel.fetch_message(cached)
+                msg = await intro_channel.fetch_message(cached)
+                record = build_intro_record(msg)
+                if record is not None:
+                    await upsert_intro_record(self.pool, record)
+                return msg
             except discord.NotFound:
                 self._cache_pop(guild_id, user_id)
             except discord.Forbidden:
@@ -840,8 +756,26 @@ class IntroBot(discord.Client):
         async for msg in intro_channel.history(limit=INTRO_HISTORY_MAX_SCAN, oldest_first=False):
             if msg.author.id == user_id and msg.content.strip():
                 self._cache_set(guild_id, user_id, msg.id)
+                record = build_intro_record(msg)
+                if record is not None:
+                    await upsert_intro_record(self.pool, record)
                 return msg
         return None
+
+    async def sync_intro_channel_history(self, guild_id: int, intro_channel: discord.TextChannel) -> int:
+        count = 0
+        seen: set[int] = set()
+        async for msg in intro_channel.history(limit=INTRO_HISTORY_MAX_SCAN, oldest_first=False):
+            if msg.author.bot or not msg.content.strip() or msg.author.id in seen:
+                continue
+            record = build_intro_record(msg)
+            if record is None:
+                continue
+            await upsert_intro_record(self.pool, record)
+            self._cache_set(guild_id, msg.author.id, msg.id)
+            seen.add(msg.author.id)
+            count += 1
+        return count
 
     async def on_ready(self) -> None:
         log.info(
@@ -850,8 +784,6 @@ class IntroBot(discord.Client):
             getattr(self.user, "id", None),
             len(self.guilds),
         )
-        if self.enable_api and self.api_runner is None:
-            await self.start_api_server()
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
@@ -864,6 +796,9 @@ class IntroBot(discord.Client):
         if not message.content.strip():
             return
         self._cache_set(message.guild.id, message.author.id, message.id)
+        record = build_intro_record(message)
+        if record is not None:
+            await upsert_intro_record(self.pool, record)
 
     async def on_message_delete(self, message: discord.Message) -> None:
         if message.guild is None:
@@ -875,6 +810,24 @@ class IntroBot(discord.Client):
             return
         if self._cache_get(message.guild.id, message.author.id) == message.id:
             self._cache_pop(message.guild.id, message.author.id)
+        await delete_intro_record(self.pool, message.guild.id, message.author.id, message.id)
+
+    async def on_message_edit(self, _before: discord.Message, after: discord.Message) -> None:
+        if after.author.bot or after.guild is None:
+            return
+        cfg = self.configs.get(after.guild.id)
+        if cfg is None or cfg.intro_channel_id is None:
+            return
+        if after.channel.id != cfg.intro_channel_id:
+            return
+        if not after.content.strip():
+            await delete_intro_record(self.pool, after.guild.id, after.author.id, after.id)
+            if self._cache_get(after.guild.id, after.author.id) == after.id:
+                self._cache_pop(after.guild.id, after.author.id)
+            return
+        record = build_intro_record(after)
+        if record is not None:
+            await upsert_intro_record(self.pool, record)
 
     async def on_voice_state_update(
         self,
@@ -1016,7 +969,8 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
                 "- `/intro-config cooldown` 自動投稿のクールダウンを設定\n"
                 "- `/intro-config exclude-vc` 自動投稿しない VC を管理\n"
                 "- `/intro-config nudge-exempt-role` 未記入催促を送らないロールを管理\n"
-                "- `/intro-config chill-place` レベルごとのチル場所を管理"
+                "- `/intro-config chill-place` レベルごとのチル場所を管理\n"
+                "- `/intro-config sync-intros` 既存自己紹介を API 用 DB に同期"
             )
         else:
             text = (
@@ -1250,8 +1204,23 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         bot.configs[interaction.guild_id] = cfg
         bot.intro_message_id.pop(interaction.guild_id, None)
+        try:
+            synced = await bot.sync_intro_channel_history(interaction.guild_id, channel)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"自己紹介チャンネルを {channel.mention} に設定しましたが、履歴の読み取り権限がありません。",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            log.warning("initial intro sync failed for guild=%s channel=%s: %s", interaction.guild_id, channel.id, e)
+            await interaction.response.send_message(
+                f"自己紹介チャンネルを {channel.mention} に設定しましたが、既存自己紹介の同期に失敗しました。",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_message(
-            f"自己紹介チャンネルを {channel.mention} に設定しました。",
+            f"自己紹介チャンネルを {channel.mention} に設定しました。既存自己紹介を {synced} 件同期しました。",
             ephemeral=True,
         )
 
@@ -1274,6 +1243,26 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             f"クールダウンを {seconds} 秒に更新しました。",
             ephemeral=True,
         )
+
+    @config_group.command(name="sync-intros", description="自己紹介チャンネルの既存投稿を API 用 DB に同期")
+    async def sync_intros(interaction: discord.Interaction) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        intro_channel = bot.resolve_intro_channel(interaction.guild_id)
+        if intro_channel is None:
+            await interaction.response.send_message("自己紹介チャンネルが設定されていません。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            synced = await bot.sync_intro_channel_history(interaction.guild_id, intro_channel)
+        except discord.Forbidden:
+            await interaction.followup.send("自己紹介チャンネルの読み取り権限がありません。", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            log.warning("manual intro sync failed for guild=%s: %s", interaction.guild_id, e)
+            await interaction.followup.send("同期に失敗しました。", ephemeral=True)
+            return
+        await interaction.followup.send(f"既存自己紹介を {synced} 件同期しました。", ephemeral=True)
 
     chill_place_group = app_commands.Group(
         name="chill-place",
@@ -1521,12 +1510,12 @@ async def _deny(interaction: discord.Interaction) -> None:
 
 
 async def main() -> None:
+    if not TOKENS:
+        raise RuntimeError("set DISCORD_TOKEN (single) or DISCORD_TOKENS (comma-separated)")
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=max(4, 2 * len(TOKENS)))
     await init_schema(pool)
     log.info("starting %d client(s)", len(TOKENS))
-    clients = [IntroBot(pool, enable_api=i == 0) for i, _ in enumerate(TOKENS)]
-    for client in clients:
-        client.api_clients = clients
+    clients = [IntroBot(pool) for _ in TOKENS]
     try:
         await asyncio.gather(*(c.start(t) for c, t in zip(clients, TOKENS, strict=True)))
     finally:

@@ -38,7 +38,7 @@ Bot ページで以下の **Privileged Gateway Intents** を有効化する。
 | `EXTERNAL_API_KEY` | — | (空) | level-bot 側で外部 API キー認証が有効な場合のみ設定。`Authorization: Bearer <key>` で送信される |
 | `INTRO_API_KEY` | — | `EXTERNAL_API_KEY` | intro-bot 外部 API 用の Bearer キー。空なら外部 API は 401 |
 | `INTRO_API_HOST` | — | `0.0.0.0` | intro-bot 外部 API の bind host |
-| `INTRO_API_PORT` | — | `PORT` or `8000` | intro-bot 外部 API の bind port |
+| `INTRO_API_PORT` | — | `PORT` or `8000` | intro-bot 外部 API の bind port。Railway では未設定推奨 |
 | `INTRO_API_AUTH_FAILURE_LIMIT` | — | `10` | 外部 API の Bearer 認証失敗を許容する回数 |
 | `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` | — | `60` | 外部 API の Bearer 認証失敗を数える秒数 |
 | `INTRO_API_CORS_ORIGINS` | — | (空) | ブラウザから外部 API を叩く場合に許可する Origin(カンマ区切り)。server-to-server なら空でよい |
@@ -56,6 +56,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+`.env` は任意ファイルとして読み込まれるため、`docker compose config` などの構文確認は `.env` 作成前でも実行できる。ただし Bot を実際に起動するには `DISCORD_TOKEN` または `DISCORD_TOKENS` が必要。
+
 停止 / クリーンアップ:
 
 ```bash
@@ -71,8 +73,12 @@ docker compose down -v    # ボリュームごと削除(DB リセット)
    - `DATABASE_URL = ${{Postgres.DATABASE_URL}}`(**内部用** の参照変数を使う。egress 課金対象外)
    - `DISCORD_TOKEN` または `DISCORD_TOKENS`
    - `COOLDOWN_SECONDS`(任意)
-4. デプロイ後 Logs で `[Bot#1234] ready (id=..., guilds=N)` を確認
-5. 各ギルドで管理者として `/intro-config intro-channel <#channel>` を実行して自己紹介チャンネルを設定
+4. 外部 API を使う場合は、同じリポジトリ/Dockerfile でもう 1 つ Railway サービスを作り、Start Command を `./scripts/start-api.sh` にする
+   - API サービスにも `DATABASE_URL = ${{Postgres.DATABASE_URL}}` を設定
+   - `INTRO_API_KEY` を設定
+   - `INTRO_API_PORT` は未設定にして Railway の `PORT` を使う
+5. デプロイ後 Logs で Bot 側の `[Bot#1234] ready (id=..., guilds=N)` と API 側の `intro API listening` を確認
+6. 各ギルドで管理者として `/intro-config intro-channel <#channel>` を実行して自己紹介チャンネルを設定
 
 ## Bot を招待する
 

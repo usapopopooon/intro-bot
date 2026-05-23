@@ -1,9 +1,26 @@
 services:
   bot:
     build: .
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+    command: ["./scripts/start-bot.sh"]
     environment:
       DATABASE_URL: postgresql://postgres:pass@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    command: ["./scripts/start-api.sh"]
+    environment:
+      DATABASE_URL: postgresql://postgres:pass@postgres:5432/postgres
+      INTRO_API_PORT: ${INTRO_API_PORT:-8000}
     ports:
       - "${INTRO_API_PORT:-8000}:${INTRO_API_PORT:-8000}"
     depends_on:

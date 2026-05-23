@@ -10,10 +10,14 @@ ENV PYTHONUNBUFFERED=1 \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY bot.py ./
+COPY bot.py api.py ./
+COPY scripts ./scripts
 
 RUN useradd --system --create-home --shell /usr/sbin/nologin app \
+    && chmod +x /app/scripts/start-bot.sh /app/scripts/start-api.sh \
     && chown -R app:app /app
 USER app
 
-CMD ["python", "bot.py"]
+EXPOSE 8000
+
+CMD ["./scripts/start-bot.sh"]

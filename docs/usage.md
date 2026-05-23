@@ -117,8 +117,8 @@ Lv.100 🏆 常連席
 
 ### 外部 API(任意)
 
-Bot プロセスは読み取り専用の HTTP API も起動する。`Authorization: Bearer <INTRO_API_KEY>` で、自己紹介 embed に表示する材料を JSON で取得できる。`INTRO_API_KEY` が未設定の場合は `EXTERNAL_API_KEY` を流用し、どちらも空なら API は常に `401 Unauthorized` を返す。
-`DISCORD_TOKENS` で複数 Bot を並列起動している場合も、API は全 Client から対象ギルドを探す。Discord 接続が ready になる前は `503 Bot clients are not ready` を返す。Bearer 認証失敗は IP 単位で `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` 秒あたり `INTRO_API_AUTH_FAILURE_LIMIT` 回を超えると `429 Too Many Requests` になる。
+読み取り専用の HTTP API は Bot と別プロセスで `./scripts/start-api.sh` として起動する。API は Discord Gateway に接続せず、Bot が同期した `intro_messages` テーブルと level-bot API から、自己紹介 embed に表示する材料を JSON で返す。`Authorization: Bearer <INTRO_API_KEY>` が必要で、`INTRO_API_KEY` が未設定の場合は `EXTERNAL_API_KEY` を流用し、どちらも空なら API は常に `401 Unauthorized` を返す。
+Bearer 認証失敗は IP 単位で `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` 秒あたり `INTRO_API_AUTH_FAILURE_LIMIT` 回を超えると `429 Too Many Requests` になる。Railway では API サービスの Start Command を `./scripts/start-api.sh` にし、`INTRO_API_PORT` は未設定にして Railway が注入する `PORT` を使う。
 
 CORS はデフォルトでは無効。ブラウザから別オリジンで叩く場合は、`INTRO_API_CORS_ORIGINS=https://example.com,https://admin.example.com` のように許可 Origin を明示する。server-to-server 利用だけなら空のままでよい。ブラウザに `INTRO_API_KEY` を置くと利用者から見えるため、公開フロントエンドではサーバー側 proxy 経由を推奨する。
 
@@ -207,7 +207,7 @@ nudge_exempt_roles: @ゲスト, @Bot運用
 このギルドの自己紹介チャンネルを設定する(未設定なら新規作成、設定済みなら更新)。
 
 - 対象は `TextChannel` のみ選択可能
-- 設定時にこのギルドのメッセージキャッシュがクリアされ、次回の VC 入室時に新しいチャンネルから履歴を再走査する
+- 設定時にこのギルドのメッセージキャッシュがクリアされ、既存自己紹介が API 用 DB に同期される
 - 設定内容は DB(`bot_config` テーブル)に永続化される
 - これを実行するまで、自動投稿および `/intros` / `/intro` は動作しない
 
@@ -218,6 +218,14 @@ nudge_exempt_roles: @ゲスト, @Bot運用
 - 値の範囲は **1〜86400 秒**(1 秒〜1 日)
 - 即時反映。すでに最終投稿から経過した時間にそのまま新しい閾値が適用される(例: 30 分前に投稿したユーザーがいる状態で 1800 秒に変更すると、その時点でクールダウンが解除される)
 - 設定内容は DB に永続化される
+
+### `/intro-config sync-intros`
+
+自己紹介チャンネルの既存投稿を API 用 DB(`intro_messages`)に同期する。
+
+- 各ユーザーの最新の本文あり投稿だけを同期する
+- API を追加した直後や、同期状態を明示的に更新したいときに使う
+- 設定済みの自己紹介チャンネルを履歴走査するため、Bot に `Read Message History` が必要
 
 ### `/intro-config chill-place add <level> <name> [emoji]`
 
