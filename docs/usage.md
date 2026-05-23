@@ -119,6 +119,7 @@ Lv.100 🏆 常連席
 
 読み取り専用の HTTP API は Bot と別プロセスで `./scripts/start-api.sh` として起動する。API は Discord Gateway に接続せず、Bot が同期した `intro_messages` テーブルと level-bot API から、自己紹介 embed に表示する材料を JSON で返す。`Authorization: Bearer <INTRO_API_KEY>` が必要で、`INTRO_API_KEY` が未設定の場合は `EXTERNAL_API_KEY` を流用し、どちらも空なら API は常に `401 Unauthorized` を返す。
 Bearer 認証失敗は IP 単位で `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` 秒あたり `INTRO_API_AUTH_FAILURE_LIMIT` 回を超えると `429 Too Many Requests` になる。Railway では API サービスの Start Command を `./scripts/start-api.sh` にし、`INTRO_API_PORT` は未設定にして Railway が注入する `PORT` を使う。
+API の詳細なリクエスト/レスポンス仕様は [API ドキュメント](api.md) を参照。
 
 CORS はデフォルトでは無効。ブラウザから別オリジンで叩く場合は、`INTRO_API_CORS_ORIGINS=https://example.com,https://admin.example.com` のように許可 Origin を明示する。server-to-server 利用だけなら空のままでよい。ブラウザに `INTRO_API_KEY` を置くと利用者から見えるため、公開フロントエンドではサーバー側 proxy 経由を推奨する。
 
