@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 import aiohttp
 import asyncpg
@@ -27,6 +28,7 @@ USER_STATS_SITE_GUILD_ID = (os.environ.get("USER_STATS_SITE_GUILD_ID") or "").st
 USER_STATS_SITE_BASE_URL = (os.environ.get("USER_STATS_SITE_BASE_URL") or "").strip().rstrip("/")
 
 EMBED_DESCRIPTION_LIMIT = 4000
+DISCORD_MESSAGE_LIMIT = 2000
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -40,6 +42,46 @@ class GuildConfig:
     cooldown_seconds: int
     excluded_vc_ids: frozenset[int]
     nudge_exempt_role_ids: frozenset[int]
+
+
+@dataclass(frozen=True)
+class ChillPlace:
+    required_level: int
+    name: str
+    tags: tuple[str, ...] = ()
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class ChillDisplay:
+    current: ChillPlace | None
+    next_place: ChillPlace | None
+    selected_locked: bool = False
+
+
+DEFAULT_CHILL_PLACES: tuple[ChillPlace, ...] = (
+    ChillPlace(1, "入口のベンチ", ("はじめまして", "気軽"), "まずはここで、ゆっくり空気を眺める席。"),
+    ChillPlace(2, "ロビーソファ", ("雑談", "のんびり"), "通りすがりの会話に混ざりやすい、やわらかい場所。"),
+    ChillPlace(3, "窓際スツール", ("ひと休み", "明るい"), "外の気配を感じながら、少しだけ腰を下ろす席。"),
+    ChillPlace(4, "小さな丸テーブル", ("少人数", "気軽"), "近くの人と軽く話すのにちょうどいいテーブル。"),
+    ChillPlace(5, "カフェカウンター", ("雑談", "作業前"), "飲み物を片手に、その日の調子を整える場所。"),
+    ChillPlace(6, "本棚のそば", ("静か", "読書"), "会話も作業も、少し落ち着いた声になる一角。"),
+    ChillPlace(7, "観葉植物の横", ("すみっこ", "安心"), "ほどよく人の気配がある、静かなすみっこ。"),
+    ChillPlace(8, "ふかふかチェア", ("まったり", "休憩"), "ちょっと疲れた日に沈み込む席。"),
+    ChillPlace(9, "充電席", ("回復", "作業"), "端末も気持ちも、じわっと充電していく場所。"),
+    ChillPlace(10, "いつものカフェ席", ("定位置", "雑談"), "顔なじみの会話が自然に始まる席。"),
+    ChillPlace(12, "静かな作業机", ("集中", "静か"), "少し集中したい日に向いた、整った机。"),
+    ChillPlace(14, "本棚奥の席", ("読書", "隠れ家"), "本棚の奥で、話しかけられすぎずに過ごせる場所。"),
+    ChillPlace(16, "夜更かしテーブル", ("夜", "作業"), "遅い時間のゆるい作業と雑談が似合うテーブル。"),
+    ChillPlace(18, "半個室ソファ", ("少人数", "落ち着く"), "少しこもって、近い人たちと過ごせるソファ。"),
+    ChillPlace(20, "チルラウンジ", ("節目", "まったり"), "ここまで来た人のための、広めでゆるいラウンジ。"),
+    ChillPlace(25, "窓辺の作業部屋", ("集中", "景色"), "景色を横目に、ゆっくり手を動かす部屋。"),
+    ChillPlace(30, "深夜の作業部屋", ("深夜", "集中"), "静かな夜に、ぽつぽつ人が集まる作業部屋。"),
+    ChillPlace(40, "中庭ベンチ", ("外気", "休憩"), "少し外に出た気分で、肩の力を抜けるベンチ。"),
+    ChillPlace(50, "暖炉前", ("常連", "ぬくもり"), "長くいる人たちの会話がゆっくり続く場所。"),
+    ChillPlace(75, "屋上テラス", ("夜風", "特別"), "夜風にあたりながら、静かに話せる特別席。"),
+    ChillPlace(100, "常連席", ("記念", "定位置"), "ここまで過ごしてきた人だけの、ちょっと誇らしい席。"),
+)
 
 
 _SELECT_COLUMNS = "guild_id, intro_channel_id, cooldown_seconds, excluded_vc_ids, nudge_exempt_role_ids"
@@ -76,12 +118,101 @@ async def init_schema(pool: asyncpg.Pool) -> None:
         await con.execute(
             "ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS nudge_exempt_role_ids BIGINT[] NOT NULL DEFAULT '{}'"
         )
+        await con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_chill_places (
+                guild_id       BIGINT NOT NULL,
+                required_level INTEGER NOT NULL CHECK (required_level >= 1),
+                name           TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
+                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (guild_id, required_level)
+            )
+            """
+        )
+        await con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_chill_places (
+                guild_id       BIGINT NOT NULL,
+                user_id        BIGINT NOT NULL,
+                required_level INTEGER NOT NULL CHECK (required_level >= 1),
+                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (guild_id, user_id)
+            )
+            """
+        )
 
 
 async def load_all_configs(pool: asyncpg.Pool) -> dict[int, GuildConfig]:
     async with pool.acquire() as con:
         rows = await con.fetch(f"SELECT {_SELECT_COLUMNS} FROM bot_config")
     return {r["guild_id"]: _row_to_config(r) for r in rows}
+
+
+async def load_all_chill_place_overrides(pool: asyncpg.Pool) -> dict[int, dict[int, str]]:
+    async with pool.acquire() as con:
+        rows = await con.fetch("SELECT guild_id, required_level, name FROM guild_chill_places")
+    overrides: dict[int, dict[int, str]] = {}
+    for row in rows:
+        overrides.setdefault(row["guild_id"], {})[row["required_level"]] = row["name"]
+    return overrides
+
+
+async def load_all_user_chill_levels(pool: asyncpg.Pool) -> dict[int, dict[int, int]]:
+    async with pool.acquire() as con:
+        rows = await con.fetch("SELECT guild_id, user_id, required_level FROM user_chill_places")
+    selections: dict[int, dict[int, int]] = {}
+    for row in rows:
+        selections.setdefault(row["guild_id"], {})[row["user_id"]] = row["required_level"]
+    return selections
+
+
+async def upsert_chill_place(pool: asyncpg.Pool, guild_id: int, required_level: int, name: str) -> None:
+    async with pool.acquire() as con:
+        await con.execute(
+            """
+            INSERT INTO guild_chill_places (guild_id, required_level, name)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, required_level) DO UPDATE
+            SET name = EXCLUDED.name, updated_at = NOW()
+            """,
+            guild_id,
+            required_level,
+            name,
+        )
+
+
+async def remove_chill_place(pool: asyncpg.Pool, guild_id: int, required_level: int) -> bool:
+    async with pool.acquire() as con:
+        result = await con.execute(
+            "DELETE FROM guild_chill_places WHERE guild_id = $1 AND required_level = $2",
+            guild_id,
+            required_level,
+        )
+    return result == "DELETE 1"
+
+
+async def set_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int, required_level: int) -> None:
+    async with pool.acquire() as con:
+        await con.execute(
+            """
+            INSERT INTO user_chill_places (guild_id, user_id, required_level)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id) DO UPDATE
+            SET required_level = EXCLUDED.required_level, updated_at = NOW()
+            """,
+            guild_id,
+            user_id,
+            required_level,
+        )
+
+
+async def clear_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int) -> None:
+    async with pool.acquire() as con:
+        await con.execute(
+            "DELETE FROM user_chill_places WHERE guild_id = $1 AND user_id = $2",
+            guild_id,
+            user_id,
+        )
 
 
 async def upsert_intro_channel(pool: asyncpg.Pool, guild_id: int, channel_id: int) -> GuildConfig:
@@ -193,6 +324,71 @@ def truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+def build_chill_places(overrides: dict[int, str] | None = None) -> tuple[ChillPlace, ...]:
+    by_level = {place.required_level: place for place in DEFAULT_CHILL_PLACES}
+    if overrides:
+        for level, name in overrides.items():
+            default = by_level.get(level)
+            tags = default.tags if default is not None else ()
+            description = default.description if default is not None else None
+            by_level[level] = ChillPlace(level, name, tags=tags, description=description)
+    return tuple(by_level[level] for level in sorted(by_level))
+
+
+def resolve_chill_display(
+    places: tuple[ChillPlace, ...],
+    level_info: tuple[int, float] | None,
+    selected_level: int | None = None,
+) -> ChillDisplay | None:
+    if level_info is None or not places:
+        return None
+    level, _ = level_info
+    unlocked = [place for place in places if place.required_level <= level]
+    if not unlocked:
+        next_place = next((place for place in places if place.required_level > level), None)
+        return ChillDisplay(current=None, next_place=next_place)
+
+    selected = next((place for place in places if place.required_level == selected_level), None)
+    if selected is not None and selected.required_level <= level:
+        current = selected
+        selected_locked = False
+    else:
+        current = unlocked[-1]
+        selected_locked = selected is not None
+    next_place = next((place for place in places if place.required_level > level), None)
+    return ChillDisplay(current=current, next_place=next_place, selected_locked=selected_locked)
+
+
+def format_chill_display(display: ChillDisplay) -> str:
+    lines: list[str] = []
+    if display.current is not None:
+        lines.append(f"{display.current.name} (Lv.{display.current.required_level})")
+        if display.current.tags:
+            lines.append(" / ".join(display.current.tags))
+        if display.current.description:
+            lines.append(display.current.description)
+    else:
+        lines.append("まだ解放されていません")
+    if display.next_place is not None:
+        lines.append(f"次の解放: {display.next_place.name} Lv.{display.next_place.required_level}")
+    if display.selected_locked:
+        lines.append("選択中の場所は現在レベルでは未解放です")
+    return "\n".join(lines)
+
+
+def format_chill_list(places: tuple[ChillPlace, ...], level: int | None = None) -> str:
+    lines: list[str] = []
+    for place in places:
+        if level is None:
+            prefix = "-"
+        elif place.required_level <= level:
+            prefix = "✓"
+        else:
+            prefix = "□"
+        lines.append(f"{prefix} Lv.{place.required_level} {place.name}")
+    return "\n".join(lines)
+
+
 def _pick_image_attachment(attachments):
     for att in attachments:
         if (att.content_type or "").startswith("image/") or att.filename.lower().endswith(IMAGE_EXTENSIONS):
@@ -221,6 +417,7 @@ def build_embed(
     member: discord.Member,
     intro: discord.Message,
     level_info: tuple[int, float] | None = None,
+    chill_display: ChillDisplay | None = None,
     include_stats_link: bool = True,
 ) -> discord.Embed:
     embed = discord.Embed(
@@ -236,6 +433,8 @@ def build_embed(
     img = _pick_image_attachment(intro.attachments)
     if img is not None:
         embed.set_image(url=img.url)
+    if chill_display is not None:
+        embed.add_field(name="チル場所", value=format_chill_display(chill_display), inline=False)
     if level_info is not None:
         level, progress = level_info
         embed.set_footer(text=f"Lv. {level} ({int(progress * 100)}%)")
@@ -306,11 +505,15 @@ class IntroBot(discord.Client):
         self.http_session: aiohttp.ClientSession | None = None
         # (guild_id, user_id) -> (level_info, expiry_monotonic)
         self.level_cache: dict[tuple[int, int], tuple[tuple[int, float] | None, float]] = {}
+        self.chill_place_overrides: dict[int, dict[int, str]] = {}
+        self.user_chill_levels: dict[int, dict[int, int]] = {}
         register_commands(self.tree, self)
 
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
         self.configs = await load_all_configs(self.pool)
+        self.chill_place_overrides = await load_all_chill_place_overrides(self.pool)
+        self.user_chill_levels = await load_all_user_chill_levels(self.pool)
         log.info("loaded %d guild configs", len(self.configs))
         await self.tree.sync()
 
@@ -329,6 +532,22 @@ class IntroBot(discord.Client):
         value = await fetch_user_level(self.http_session, guild_id, user_id)
         self.level_cache[key] = (value, now + LEVEL_CACHE_TTL_SECONDS)
         return value
+
+    def get_chill_places(self, guild_id: int) -> tuple[ChillPlace, ...]:
+        return build_chill_places(self.chill_place_overrides.get(guild_id))
+
+    def get_user_chill_level(self, guild_id: int, user_id: int) -> int | None:
+        return self.user_chill_levels.get(guild_id, {}).get(user_id)
+
+    async def get_chill_display(
+        self,
+        guild_id: int,
+        user_id: int,
+        level_info: tuple[int, float] | None,
+    ) -> ChillDisplay | None:
+        places = self.get_chill_places(guild_id)
+        selected_level = self.get_user_chill_level(guild_id, user_id)
+        return resolve_chill_display(places, level_info, selected_level)
 
     def resolve_intro_channel(self, guild_id: int) -> discord.TextChannel | None:
         cfg = self.configs.get(guild_id)
@@ -479,11 +698,18 @@ class IntroBot(discord.Client):
                 return
 
             level_info = await level_task
+            chill_display = await self.get_chill_display(member.guild.id, member.id, level_info)
             try:
                 stats_url = build_user_stats_url(member.guild.id, member.id)
                 await target.send(
                     content=f"{member.mention} が参加しました",
-                    embed=build_embed(member, intro, level_info=level_info, include_stats_link=False),
+                    embed=build_embed(
+                        member,
+                        intro,
+                        level_info=level_info,
+                        chill_display=chill_display,
+                        include_stats_link=False,
+                    ),
                     view=build_user_stats_view(stats_url),
                     allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
                 )
@@ -502,6 +728,47 @@ class IntroBot(discord.Client):
 
 
 def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
+    @tree.command(name="intro-help", description="intro-bot の使い方を表示")
+    @app_commands.describe(topic="表示するヘルプの種類")
+    @app_commands.choices(
+        topic=[
+            app_commands.Choice(name="基本", value="basic"),
+            app_commands.Choice(name="チル場所", value="chill"),
+            app_commands.Choice(name="管理者設定", value="config"),
+        ]
+    )
+    @app_commands.guild_only()
+    async def intro_help(
+        interaction: discord.Interaction,
+        topic: Literal["basic", "chill", "config"] = "basic",
+    ) -> None:
+        if topic == "chill":
+            text = (
+                "チル場所:\n"
+                "- `/intro-chill list` 解放状況を見る\n"
+                "- `/intro-chill set level:<レベル>` 自己紹介に出す場所を選ぶ\n"
+                "- `/intro-chill mine` 現在の選択を見る\n"
+                "- `/intro-chill clear` 選択を解除して、現在レベルの最高解放場所を自動表示する"
+            )
+        elif topic == "config":
+            text = (
+                "管理者設定:\n"
+                "- `/intro-config intro-channel` 自己紹介チャンネルを設定\n"
+                "- `/intro-config cooldown` 自動投稿のクールダウンを設定\n"
+                "- `/intro-config exclude-vc` 自動投稿しない VC を管理\n"
+                "- `/intro-config nudge-exempt-role` 未記入催促を送らないロールを管理\n"
+                "- `/intro-config chill-place` レベルごとのチル場所を管理"
+            )
+        else:
+            text = (
+                "intro-bot:\n"
+                "- `/intro user:@user` 指定した人の自己紹介を見る\n"
+                "- `/intros` VC にいる全員の自己紹介を見る\n"
+                "- `/intro-chill list` レベルで解放されるチル場所を見る\n"
+                "- `/intro-help topic:チル場所` チル場所コマンドの詳細を見る"
+            )
+        await interaction.response.send_message(text, ephemeral=True)
+
     @tree.command(name="intros", description="この VC にいる全員の自己紹介を表示")
     @app_commands.guild_only()
     async def intros_cmd(interaction: discord.Interaction) -> None:
@@ -543,7 +810,14 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             return
 
         level_infos = await asyncio.gather(*(bot.get_user_level(interaction.guild_id, m.id) for m, _ in pairs))
-        embeds = [build_embed(m, intro, level_info=lv) for (m, intro), lv in zip(pairs, level_infos, strict=True)]
+        chill_displays = [
+            await bot.get_chill_display(interaction.guild_id, m.id, lv)
+            for (m, _), lv in zip(pairs, level_infos, strict=True)
+        ]
+        embeds = [
+            build_embed(m, intro, level_info=lv, chill_display=chill)
+            for ((m, intro), lv, chill) in zip(pairs, level_infos, chill_displays, strict=True)
+        ]
         for i in range(0, len(embeds), 10):
             await interaction.followup.send(embeds=embeds[i : i + 10])
         if missing:
@@ -575,11 +849,98 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             )
             return
         level_info = await bot.get_user_level(interaction.guild_id, user.id)
+        chill_display = await bot.get_chill_display(interaction.guild_id, user.id, level_info)
         stats_url = build_user_stats_url(interaction.guild_id, user.id)
         await interaction.followup.send(
-            embed=build_embed(user, intro_msg, level_info=level_info, include_stats_link=False),
+            embed=build_embed(
+                user,
+                intro_msg,
+                level_info=level_info,
+                chill_display=chill_display,
+                include_stats_link=False,
+            ),
             view=build_user_stats_view(stats_url),
         )
+
+    chill_group = app_commands.Group(
+        name="intro-chill",
+        description="自己紹介に表示するチル場所を選択",
+        guild_only=True,
+    )
+
+    @chill_group.command(name="list", description="レベルごとのチル場所と自分の解放状況を表示")
+    async def chill_list(interaction: discord.Interaction) -> None:
+        level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
+        level = level_info[0] if level_info is not None else None
+        text = format_chill_list(bot.get_chill_places(interaction.guild_id), level=level)
+        if level is None:
+            text = "現在レベルを取得できませんでした。場所一覧のみ表示します。\n" + text
+        text = truncate(text, DISCORD_MESSAGE_LIMIT)
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @chill_group.command(name="set", description="自己紹介に表示するチル場所を選択")
+    @app_commands.describe(level="場所が解放されるレベル")
+    async def chill_set(
+        interaction: discord.Interaction,
+        level: app_commands.Range[int, 1, 1000],
+    ) -> None:
+        level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
+        if level_info is None:
+            await interaction.response.send_message(
+                "現在レベルを取得できないため、チル場所を選択できません。",
+                ephemeral=True,
+            )
+            return
+        current_level, _ = level_info
+        places = bot.get_chill_places(interaction.guild_id)
+        place = next((p for p in places if p.required_level == level), None)
+        if place is None:
+            await interaction.response.send_message(
+                "そのレベルのチル場所は設定されていません。`/intro-chill list` で確認してください。",
+                ephemeral=True,
+            )
+            return
+        if place.required_level > current_level:
+            await interaction.response.send_message(
+                f"{place.name} は Lv.{place.required_level} で解放されます。現在は Lv.{current_level} です。",
+                ephemeral=True,
+            )
+            return
+        try:
+            await set_user_chill_level(bot.pool, interaction.guild_id, interaction.user.id, place.required_level)
+        except Exception as e:
+            log.error("set_user_chill_level failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.user_chill_levels.setdefault(interaction.guild_id, {})[interaction.user.id] = place.required_level
+        await interaction.response.send_message(
+            f"チル場所を「{place.name}」に設定しました。",
+            ephemeral=True,
+        )
+
+    @chill_group.command(name="clear", description="チル場所の選択を解除")
+    async def chill_clear(interaction: discord.Interaction) -> None:
+        try:
+            await clear_user_chill_level(bot.pool, interaction.guild_id, interaction.user.id)
+        except Exception as e:
+            log.error("clear_user_chill_level failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        if interaction.guild_id in bot.user_chill_levels:
+            bot.user_chill_levels[interaction.guild_id].pop(interaction.user.id, None)
+        await interaction.response.send_message(
+            "チル場所の選択を解除しました。現在レベルで解放済みの一番上の場所を自動表示します。",
+            ephemeral=True,
+        )
+
+    @chill_group.command(name="mine", description="現在のチル場所を表示")
+    async def chill_mine(interaction: discord.Interaction) -> None:
+        level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
+        display = await bot.get_chill_display(interaction.guild_id, interaction.user.id, level_info)
+        if display is None:
+            await interaction.response.send_message("現在レベルを取得できませんでした。", ephemeral=True)
+            return
+        await interaction.response.send_message(format_chill_display(display), ephemeral=True)
 
     config_group = app_commands.Group(
         name="intro-config",
@@ -652,6 +1013,74 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
         bot.configs[interaction.guild_id] = cfg
         await interaction.response.send_message(
             f"クールダウンを {seconds} 秒に更新しました。",
+            ephemeral=True,
+        )
+
+    chill_place_group = app_commands.Group(
+        name="chill-place",
+        description="レベルごとのチル場所を管理",
+        parent=config_group,
+    )
+
+    @chill_place_group.command(name="add", description="レベルごとのチル場所を追加・変更")
+    @app_commands.describe(level="解放レベル", name="場所名")
+    async def chill_place_add(
+        interaction: discord.Interaction,
+        level: app_commands.Range[int, 1, 1000],
+        name: app_commands.Range[str, 1, 80],
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        clean_name = name.strip()
+        if not clean_name:
+            await interaction.response.send_message("場所名を入力してください。", ephemeral=True)
+            return
+        try:
+            await upsert_chill_place(bot.pool, interaction.guild_id, level, clean_name)
+        except Exception as e:
+            log.error("upsert_chill_place failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        bot.chill_place_overrides.setdefault(interaction.guild_id, {})[level] = clean_name
+        await interaction.response.send_message(
+            f"Lv.{level} のチル場所を「{clean_name}」に設定しました。",
+            ephemeral=True,
+        )
+
+    @chill_place_group.command(name="remove", description="追加・変更したチル場所を削除")
+    @app_commands.describe(level="削除する解放レベル")
+    async def chill_place_remove(
+        interaction: discord.Interaction,
+        level: app_commands.Range[int, 1, 1000],
+    ) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        try:
+            removed = await remove_chill_place(bot.pool, interaction.guild_id, level)
+        except Exception as e:
+            log.error("remove_chill_place failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        if interaction.guild_id in bot.chill_place_overrides:
+            bot.chill_place_overrides[interaction.guild_id].pop(level, None)
+        if not removed:
+            await interaction.response.send_message(
+                "カスタム設定はありませんでした。プリセットの場所はそのまま表示されます。",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"Lv.{level} のカスタム設定を削除しました。",
+            ephemeral=True,
+        )
+
+    @chill_place_group.command(name="list", description="レベルごとのチル場所一覧を表示")
+    async def chill_place_list(interaction: discord.Interaction) -> None:
+        if not _ensure_admin(interaction):
+            return await _deny(interaction)
+        text = truncate(format_chill_list(bot.get_chill_places(interaction.guild_id)), DISCORD_MESSAGE_LIMIT)
+        await interaction.response.send_message(
+            text,
             ephemeral=True,
         )
 
@@ -811,6 +1240,7 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    tree.add_command(chill_group)
     tree.add_command(config_group)
 
 
