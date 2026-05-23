@@ -6,6 +6,7 @@ Discord でユーザーが VC に入室すると、自己紹介チャンネル�
 - 1 プロセスで複数の Bot トークンを並列起動可能
 - ギルドごとの設定(自己紹介チャンネル / クールダウン)は Postgres に永続化
 - 任意で [level-bot](../level-bot) 連携: 埋め込み footer に総合レベルを表示し、ユーザー統計サイトへのリンクやレベル解放式のチル場所を追加
+- `Authorization: Bearer <key>` で自己紹介表示内容を取得できる読み取り専用 API
 - 運用 / 管理者向けの使い方: [docs/usage.md](docs/usage.md)
 
 ## 必要なもの
@@ -35,6 +36,11 @@ Bot ページで以下の **Privileged Gateway Intents** を有効化する。
 | `USER_STATS_SITE_GUILD_ID` | — | (空) | ユーザー統計サイトへのリンクを表示する対象ギルド ID |
 | `USER_STATS_SITE_BASE_URL` | — | (空) | `/level` と同じユーザー統計サイトの Base URL。`/u/<user_id>/level?days=30` を付けてリンクする |
 | `EXTERNAL_API_KEY` | — | (空) | level-bot 側で外部 API キー認証が有効な場合のみ設定。`Authorization: Bearer <key>` で送信される |
+| `INTRO_API_KEY` | — | `EXTERNAL_API_KEY` | intro-bot 外部 API 用の Bearer キー。空なら外部 API は 401 |
+| `INTRO_API_HOST` | — | `0.0.0.0` | intro-bot 外部 API の bind host |
+| `INTRO_API_PORT` | — | `PORT` or `8000` | intro-bot 外部 API の bind port |
+| `INTRO_API_AUTH_FAILURE_LIMIT` | — | `10` | 外部 API の Bearer 認証失敗を許容する回数 |
+| `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` | — | `60` | 外部 API の Bearer 認証失敗を数える秒数 |
 
 `DISCORD_TOKEN` か `DISCORD_TOKENS` のどちらかが必須。両方ある場合は `DISCORD_TOKENS` が使われる。
 

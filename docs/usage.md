@@ -115,6 +115,31 @@ Lv.100 🏆 常連席
 - `/intros` は複数人をまとめて送るため、各 embed 内リンクのみ表示される
 - `USER_STATS_SITE_GUILD_ID` と投稿先ギルド ID が一致しない場合、リンクは表示されない
 
+### 外部 API(任意)
+
+Bot プロセスは読み取り専用の HTTP API も起動する。`Authorization: Bearer <INTRO_API_KEY>` で、自己紹介 embed に表示する材料を JSON で取得できる。`INTRO_API_KEY` が未設定の場合は `EXTERNAL_API_KEY` を流用し、どちらも空なら API は常に `401 Unauthorized` を返す。
+`DISCORD_TOKENS` で複数 Bot を並列起動している場合も、API は全 Client から対象ギルドを探す。Discord 接続が ready になる前は `503 Bot clients are not ready` を返す。Bearer 認証失敗は IP 単位で `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` 秒あたり `INTRO_API_AUTH_FAILURE_LIMIT` 回を超えると `429 Too Many Requests` になる。
+
+```
+GET /api/v1/guilds/{guild_id}/users/{user_id}/intro
+Authorization: Bearer <INTRO_API_KEY>
+```
+
+返却内容:
+
+- メンバー表示名 / アバター URL
+- 自己紹介本文 / ジャンプ URL / 添付画像 URL
+- level-bot 連携のレベル情報
+- チル場所の現在地 / 次の解放 / 表示用テキスト
+- ユーザー統計サイト URL
+
+例:
+
+```bash
+curl -H "Authorization: Bearer $INTRO_API_KEY" \
+  "https://intro-bot.example.com/api/v1/guilds/123/users/456/intro"
+```
+
 ## メンバー向けスラッシュコマンド
 
 サーバーメンバー全員が実行可能。クールダウンは無視され、何度でも実行できる(自動投稿のクールダウンとは独立)。

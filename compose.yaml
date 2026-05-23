@@ -4,6 +4,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:pass@postgres:5432/postgres
+    ports:
+      - "${INTRO_API_PORT:-8000}:${INTRO_API_PORT:-8000}"
     depends_on:
       postgres:
         condition: service_healthy

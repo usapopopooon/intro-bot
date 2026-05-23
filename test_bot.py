@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import bot
 
@@ -240,3 +241,80 @@ def test_format_chill_list_includes_emoji():
     assert "✓ Lv.1 🪑 入口のベンチ" in text
     assert "✓ Lv.2 🛋️ ロビーソファ" in text
     assert "□ Lv.3 🪟 窓際スツール" in text
+
+
+def test_serialize_chill_display():
+    display = bot.resolve_chill_display(bot.build_chill_places(), (8, 0.1))
+
+    payload = bot.serialize_chill_display(display)
+
+    assert payload is not None
+    assert payload["current"]["required_level"] == 8
+    assert payload["current"]["name"] == "ふかふかチェア"
+    assert payload["current"]["emoji"] == "💤"
+    assert payload["current"]["display_name"] == "💤 ふかふかチェア"
+    assert payload["current"]["tags"] == ["まったり", "休憩"]
+    assert payload["next"]["required_level"] == 9
+    assert payload["next"]["display_name"] == "🔌 充電席"
+    assert payload["selected_locked"] is False
+    assert "💤 ふかふかチェア (Lv.8)" in payload["display_text"]
+
+
+def test_parse_bearer_token():
+    class Request:
+        headers = {"Authorization": "Bearer secret"}
+
+    assert bot._parse_bearer_token(Request()) == "secret"
+
+
+def test_parse_bearer_token_rejects_missing_or_wrong_scheme():
+    class Missing:
+        headers = {}
+
+    class Basic:
+        headers = {"Authorization": "Basic abc"}
+
+    assert bot._parse_bearer_token(Missing()) is None
+    assert bot._parse_bearer_token(Basic()) is None
+
+
+def test_intro_api_finds_client_by_guild():
+    owner = bot.IntroBot(None)
+    other = bot.IntroBot(None)
+    owner.get_guild = Mock(return_value=None)
+    guild = object()
+    other.get_guild = Mock(return_value=guild)
+    owner.api_clients = [owner, other]
+
+    assert owner.find_intro_api_client(123) is other
+
+
+def test_intro_api_ready_requires_all_clients_ready():
+    owner = bot.IntroBot(None)
+    other = bot.IntroBot(None)
+    owner.is_ready = Mock(return_value=True)
+    other.is_ready = Mock(return_value=False)
+    owner.api_clients = [owner, other]
+
+    assert owner.is_intro_api_ready() is False
+
+    other.is_ready = Mock(return_value=True)
+    assert owner.is_intro_api_ready() is True
+
+
+def test_intro_api_auth_failure_rate_limit(monkeypatch):
+    monkeypatch.setattr(bot, "INTRO_API_AUTH_FAILURE_LIMIT", 2)
+    monkeypatch.setattr(bot, "INTRO_API_AUTH_FAILURE_WINDOW_SECONDS", 60)
+    owner = bot.IntroBot(None)
+
+    class Request:
+        headers = {}
+        transport = None
+
+    request = Request()
+
+    assert owner.is_intro_api_auth_limited(request) is False
+    owner.record_intro_api_auth_failure(request)
+    assert owner.is_intro_api_auth_limited(request) is False
+    owner.record_intro_api_auth_failure(request)
+    assert owner.is_intro_api_auth_limited(request) is True
