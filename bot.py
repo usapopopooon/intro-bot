@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _TOKENS_RAW = os.environ.get("DISCORD_TOKENS") or os.environ.get("DISCORD_TOKEN")
-TOKENS = [t.strip() for t in _TOKENS_RAW.split(",") if t.strip()]
+TOKENS = [t.strip() for t in (_TOKENS_RAW or "").split(",") if t.strip()]
 DATABASE_URL = os.environ["DATABASE_URL"]
 DEFAULT_COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "60"))
 INTRO_HISTORY_MAX_SCAN = int(os.environ.get("INTRO_HISTORY_MAX_SCAN", "5000"))
