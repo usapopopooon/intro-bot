@@ -318,3 +318,35 @@ def test_intro_api_auth_failure_rate_limit(monkeypatch):
     assert owner.is_intro_api_auth_limited(request) is False
     owner.record_intro_api_auth_failure(request)
     assert owner.is_intro_api_auth_limited(request) is True
+
+
+def test_build_cors_headers_disabled_without_config(monkeypatch):
+    monkeypatch.setattr(bot, "INTRO_API_CORS_ORIGINS", frozenset())
+
+    class Request:
+        headers = {"Origin": "https://example.com"}
+
+    assert bot.build_cors_headers(Request()) == {}
+
+
+def test_build_cors_headers_allows_configured_origin(monkeypatch):
+    monkeypatch.setattr(bot, "INTRO_API_CORS_ORIGINS", frozenset({"https://example.com"}))
+
+    class Request:
+        headers = {"Origin": "https://example.com"}
+
+    headers = bot.build_cors_headers(Request())
+
+    assert headers["Access-Control-Allow-Origin"] == "https://example.com"
+    assert headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
+    assert "Authorization" in headers["Access-Control-Allow-Headers"]
+    assert headers["Vary"] == "Origin"
+
+
+def test_build_cors_headers_rejects_unconfigured_origin(monkeypatch):
+    monkeypatch.setattr(bot, "INTRO_API_CORS_ORIGINS", frozenset({"https://example.com"}))
+
+    class Request:
+        headers = {"Origin": "https://evil.example"}
+
+    assert bot.build_cors_headers(Request()) == {}

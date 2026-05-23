@@ -41,6 +41,7 @@ Bot ページで以下の **Privileged Gateway Intents** を有効化する。
 | `INTRO_API_PORT` | — | `PORT` or `8000` | intro-bot 外部 API の bind port |
 | `INTRO_API_AUTH_FAILURE_LIMIT` | — | `10` | 外部 API の Bearer 認証失敗を許容する回数 |
 | `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` | — | `60` | 外部 API の Bearer 認証失敗を数える秒数 |
+| `INTRO_API_CORS_ORIGINS` | — | (空) | ブラウザから外部 API を叩く場合に許可する Origin(カンマ区切り)。server-to-server なら空でよい |
 
 `DISCORD_TOKEN` か `DISCORD_TOKENS` のどちらかが必須。両方ある場合は `DISCORD_TOKENS` が使われる。
 

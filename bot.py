@@ -33,6 +33,9 @@ INTRO_API_HOST = os.environ.get("INTRO_API_HOST", "0.0.0.0")
 INTRO_API_PORT = int(os.environ.get("INTRO_API_PORT") or os.environ.get("PORT", "8000"))
 INTRO_API_AUTH_FAILURE_LIMIT = int(os.environ.get("INTRO_API_AUTH_FAILURE_LIMIT", "10"))
 INTRO_API_AUTH_FAILURE_WINDOW_SECONDS = float(os.environ.get("INTRO_API_AUTH_FAILURE_WINDOW_SECONDS", "60"))
+INTRO_API_CORS_ORIGINS = frozenset(
+    origin.strip() for origin in os.environ.get("INTRO_API_CORS_ORIGINS", "").split(",") if origin.strip()
+)
 USER_STATS_SITE_GUILD_ID = (os.environ.get("USER_STATS_SITE_GUILD_ID") or "").strip()
 USER_STATS_SITE_BASE_URL = (os.environ.get("USER_STATS_SITE_BASE_URL") or "").strip().rstrip("/")
 
@@ -489,6 +492,37 @@ def verify_intro_api_request(request: web.Request) -> bool:
     return bool(token and INTRO_API_KEY and hmac.compare_digest(token, INTRO_API_KEY))
 
 
+def build_cors_headers(request: web.Request) -> dict[str, str]:
+    origin = request.headers.get("Origin")
+    if not origin or not INTRO_API_CORS_ORIGINS:
+        return {}
+    if "*" in INTRO_API_CORS_ORIGINS:
+        allowed_origin = "*"
+    elif origin in INTRO_API_CORS_ORIGINS:
+        allowed_origin = origin
+    else:
+        return {}
+    headers = {
+        "Access-Control-Allow-Origin": allowed_origin,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Max-Age": "600",
+    }
+    if allowed_origin != "*":
+        headers["Vary"] = "Origin"
+    return headers
+
+
+@web.middleware
+async def intro_api_cors_middleware(request: web.Request, handler) -> web.StreamResponse:
+    if request.method == "OPTIONS":
+        response = web.Response(status=204)
+    else:
+        response = await handler(request)
+    response.headers.update(build_cors_headers(request))
+    return response
+
+
 def _request_ip(request: web.Request) -> str:
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
@@ -616,7 +650,7 @@ class IntroBot(discord.Client):
         await super().close()
 
     async def start_api_server(self) -> None:
-        app = web.Application()
+        app = web.Application(middlewares=[intro_api_cors_middleware])
         app["bot"] = self
         app.router.add_get("/healthz", self.handle_healthz)
         app.router.add_get("/api/v1/guilds/{guild_id}/users/{user_id}/intro", self.handle_intro_api)

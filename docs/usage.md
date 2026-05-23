@@ -120,6 +120,8 @@ Lv.100 🏆 常連席
 Bot プロセスは読み取り専用の HTTP API も起動する。`Authorization: Bearer <INTRO_API_KEY>` で、自己紹介 embed に表示する材料を JSON で取得できる。`INTRO_API_KEY` が未設定の場合は `EXTERNAL_API_KEY` を流用し、どちらも空なら API は常に `401 Unauthorized` を返す。
 `DISCORD_TOKENS` で複数 Bot を並列起動している場合も、API は全 Client から対象ギルドを探す。Discord 接続が ready になる前は `503 Bot clients are not ready` を返す。Bearer 認証失敗は IP 単位で `INTRO_API_AUTH_FAILURE_WINDOW_SECONDS` 秒あたり `INTRO_API_AUTH_FAILURE_LIMIT` 回を超えると `429 Too Many Requests` になる。
 
+CORS はデフォルトでは無効。ブラウザから別オリジンで叩く場合は、`INTRO_API_CORS_ORIGINS=https://example.com,https://admin.example.com` のように許可 Origin を明示する。server-to-server 利用だけなら空のままでよい。ブラウザに `INTRO_API_KEY` を置くと利用者から見えるため、公開フロントエンドではサーバー側 proxy 経由を推奨する。
+
 ```
 GET /api/v1/guilds/{guild_id}/users/{user_id}/intro
 Authorization: Bearer <INTRO_API_KEY>
