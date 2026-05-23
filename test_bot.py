@@ -235,6 +235,43 @@ def test_format_chill_display_includes_vibe():
     assert "次の解放: 🔌 充電席 Lv.9" in text
 
 
+def test_format_compact_chill_display_omits_vibe():
+    display = bot.resolve_chill_display(bot.build_chill_places(), (8, 0.1))
+
+    assert display is not None
+    text = bot.format_compact_chill_display(display)
+    assert text == "💤 ふかふかチェア (Lv.8) / 次: 🔌 充電席 Lv.9"
+    assert "まったり" not in text
+    assert "ちょっと疲れた日に沈み込む席。" not in text
+
+
+def test_resolve_chill_place_selection_accepts_choice_value_and_name():
+    places = bot.build_chill_places()
+
+    assert bot.resolve_chill_place_selection(places, "8").name == "ふかふかチェア"
+    assert bot.resolve_chill_place_selection(places, "ふかふかチェア").required_level == 8
+    assert bot.resolve_chill_place_selection(places, "💤 ふかふかチェア").required_level == 8
+    assert bot.resolve_chill_place_selection(places, "💤 ふかふかチェア (Lv.8)").required_level == 8
+    assert bot.resolve_chill_place_selection(places, "ない場所") is None
+
+
+def test_build_chill_place_choices_filters_by_name_and_level():
+    places = bot.build_chill_places()
+
+    choices = bot.build_chill_place_choices(places, "ソファ", current_level=20)
+
+    assert [choice.name for choice in choices] == ["🛋️ ロビーソファ (Lv.2)", "🕯️ 半個室ソファ (Lv.18)"]
+    assert [choice.value for choice in choices] == ["2", "18"]
+
+
+def test_build_chill_place_choices_hides_locked_places():
+    places = bot.build_chill_places()
+
+    choices = bot.build_chill_place_choices(places, "", current_level=2)
+
+    assert [choice.name for choice in choices] == ["🪑 入口のベンチ (Lv.1)", "🛋️ ロビーソファ (Lv.2)"]
+
+
 def test_format_chill_list_includes_emoji():
     text = bot.format_chill_list(bot.build_chill_places(), level=2)
 

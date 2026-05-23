@@ -450,6 +450,46 @@ def format_chill_place_name(place: ChillPlace) -> str:
     return f"{place.emoji} {place.name}" if place.emoji else place.name
 
 
+def format_chill_choice_name(place: ChillPlace) -> str:
+    return f"{format_chill_place_name(place)} (Lv.{place.required_level})"
+
+
+def resolve_chill_place_selection(places: tuple[ChillPlace, ...], selection: str) -> ChillPlace | None:
+    text = selection.strip()
+    if text.isdigit():
+        level = int(text)
+        return next((place for place in places if place.required_level == level), None)
+    return next(
+        (
+            place
+            for place in places
+            if text in {place.name, format_chill_place_name(place), format_chill_choice_name(place)}
+        ),
+        None,
+    )
+
+
+def build_chill_place_choices(
+    places: tuple[ChillPlace, ...],
+    current: str,
+    current_level: int | None = None,
+) -> list[app_commands.Choice[str]]:
+    query = current.strip().lower()
+    unlocked = [place for place in places if current_level is None or place.required_level <= current_level]
+    matches = [
+        place
+        for place in unlocked
+        if not query
+        or query in place.name.lower()
+        or query in format_chill_place_name(place).lower()
+        or query in str(place.required_level)
+    ]
+    return [
+        app_commands.Choice(name=format_chill_choice_name(place)[:100], value=str(place.required_level))
+        for place in matches[:25]
+    ]
+
+
 def build_chill_places(overrides: dict[int, ChillPlaceOverride] | None = None) -> tuple[ChillPlace, ...]:
     by_level = {place.required_level: place for place in DEFAULT_CHILL_PLACES}
     if overrides:
@@ -501,6 +541,19 @@ def format_chill_display(display: ChillDisplay) -> str:
     if display.selected_locked:
         lines.append("選択中の場所は現在レベルでは未解放です")
     return "\n".join(lines)
+
+
+def format_compact_chill_display(display: ChillDisplay) -> str:
+    parts: list[str] = []
+    if display.current is not None:
+        parts.append(f"{format_chill_place_name(display.current)} (Lv.{display.current.required_level})")
+    else:
+        parts.append("まだ解放されていません")
+    if display.next_place is not None:
+        parts.append(f"次: {format_chill_place_name(display.next_place)} Lv.{display.next_place.required_level}")
+    if display.selected_locked:
+        parts.append("選択中は未解放")
+    return " / ".join(parts)
 
 
 def format_chill_list(places: tuple[ChillPlace, ...], level: int | None = None) -> str:
@@ -603,7 +656,7 @@ def build_embed(
     if img is not None:
         embed.set_image(url=img.url)
     if chill_display is not None:
-        embed.add_field(name="チル場所", value=format_chill_display(chill_display), inline=False)
+        embed.add_field(name="チル場所", value=format_compact_chill_display(chill_display), inline=True)
     if level_info is not None:
         level, progress = level_info
         embed.set_footer(text=f"Lv. {level} ({int(progress * 100)}%)")
@@ -958,7 +1011,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             text = (
                 "チル場所:\n"
                 "- `/intro-chill list` 解放状況を見る\n"
-                "- `/intro-chill set level:<レベル>` 自己紹介に出す場所を選ぶ\n"
+                "- `/intro-chill set place:<場所名>` 自己紹介に出す場所を選ぶ\n"
                 "- `/intro-chill mine` 現在の選択を見る\n"
                 "- `/intro-chill clear` 選択を解除して、現在レベルの最高解放場所を自動表示する"
             )
@@ -1091,11 +1144,20 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         text = truncate(text, DISCORD_MESSAGE_LIMIT)
         await interaction.response.send_message(text, ephemeral=True)
 
+    async def chill_place_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
+        current_level = level_info[0] if level_info is not None else None
+        return build_chill_place_choices(bot.get_chill_places(interaction.guild_id), current, current_level)
+
     @chill_group.command(name="set", description="自己紹介に表示するチル場所を選択")
-    @app_commands.describe(level="場所が解放されるレベル")
+    @app_commands.describe(place="チル場所の名前")
+    @app_commands.autocomplete(place=chill_place_autocomplete)
     async def chill_set(
         interaction: discord.Interaction,
-        level: app_commands.Range[int, 1, 1000],
+        place: str,
     ) -> None:
         level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
         if level_info is None:
@@ -1106,28 +1168,36 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         current_level, _ = level_info
         places = bot.get_chill_places(interaction.guild_id)
-        place = next((p for p in places if p.required_level == level), None)
-        if place is None:
+        selected_place = resolve_chill_place_selection(places, place)
+        if selected_place is None:
             await interaction.response.send_message(
-                "そのレベルのチル場所は設定されていません。`/intro-chill list` で確認してください。",
+                "そのチル場所は設定されていません。候補から場所名を選んでください。",
                 ephemeral=True,
             )
             return
-        if place.required_level > current_level:
+        if selected_place.required_level > current_level:
             await interaction.response.send_message(
-                f"{place.name} は Lv.{place.required_level} で解放されます。現在は Lv.{current_level} です。",
+                (
+                    f"{selected_place.name} は Lv.{selected_place.required_level} で解放されます。"
+                    f"現在は Lv.{current_level} です。"
+                ),
                 ephemeral=True,
             )
             return
         try:
-            await set_user_chill_level(bot.pool, interaction.guild_id, interaction.user.id, place.required_level)
+            await set_user_chill_level(
+                bot.pool,
+                interaction.guild_id,
+                interaction.user.id,
+                selected_place.required_level,
+            )
         except Exception as e:
             log.error("set_user_chill_level failed: %s", e)
             await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
             return
-        bot.user_chill_levels.setdefault(interaction.guild_id, {})[interaction.user.id] = place.required_level
+        bot.user_chill_levels.setdefault(interaction.guild_id, {})[interaction.user.id] = selected_place.required_level
         await interaction.response.send_message(
-            f"チル場所を「{place.name}」に設定しました。",
+            f"チル場所を「{selected_place.name}」に設定しました。",
             ephemeral=True,
         )
 
