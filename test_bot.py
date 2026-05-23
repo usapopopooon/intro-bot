@@ -151,22 +151,35 @@ def test_build_chill_places_uses_defaults():
 
     assert places[0].required_level == 1
     assert places[0].name == "入口のベンチ"
+    assert places[0].emoji == "🪑"
     assert places[0].tags == ("はじめまして", "気軽")
     assert next(p for p in places if p.required_level == 20).name == "チルラウンジ"
 
 
 def test_build_chill_places_overrides_and_sorts():
-    places = bot.build_chill_places({2: "秘密のロビー", 11: "昼寝席"})
+    places = bot.build_chill_places(
+        {
+            2: bot.ChillPlaceOverride(name="秘密のロビー", emoji="✨"),
+            11: bot.ChillPlaceOverride(name="昼寝席"),
+        }
+    )
 
     assert [p.required_level for p in places] == sorted(p.required_level for p in places)
-    assert next(p for p in places if p.required_level == 2).name == "秘密のロビー"
-    assert next(p for p in places if p.required_level == 11).name == "昼寝席"
+    level_2 = next(p for p in places if p.required_level == 2)
+    level_11 = next(p for p in places if p.required_level == 11)
+    assert level_2.name == "秘密のロビー"
+    assert level_2.emoji == "✨"
+    assert level_11.name == "昼寝席"
+    assert level_11.emoji is None
 
 
 def test_build_chill_places_keeps_default_vibe_when_overridden():
-    place = next(p for p in bot.build_chill_places({2: "秘密のロビー"}) if p.required_level == 2)
+    place = next(
+        p for p in bot.build_chill_places({2: bot.ChillPlaceOverride(name="秘密のロビー")}) if p.required_level == 2
+    )
 
     assert place.name == "秘密のロビー"
+    assert place.emoji == "🛋️"
     assert place.tags == ("雑談", "のんびり")
     assert place.description == "通りすがりの会話に混ざりやすい、やわらかい場所。"
 
@@ -215,7 +228,15 @@ def test_format_chill_display_includes_vibe():
 
     assert display is not None
     text = bot.format_chill_display(display)
-    assert "ふかふかチェア (Lv.8)" in text
+    assert "💤 ふかふかチェア (Lv.8)" in text
     assert "まったり / 休憩" in text
     assert "ちょっと疲れた日に沈み込む席。" in text
-    assert "次の解放: 充電席 Lv.9" in text
+    assert "次の解放: 🔌 充電席 Lv.9" in text
+
+
+def test_format_chill_list_includes_emoji():
+    text = bot.format_chill_list(bot.build_chill_places(), level=2)
+
+    assert "✓ Lv.1 🪑 入口のベンチ" in text
+    assert "✓ Lv.2 🛋️ ロビーソファ" in text
+    assert "□ Lv.3 🪟 窓際スツール" in text

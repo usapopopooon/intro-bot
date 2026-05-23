@@ -48,8 +48,15 @@ class GuildConfig:
 class ChillPlace:
     required_level: int
     name: str
+    emoji: str | None = None
     tags: tuple[str, ...] = ()
     description: str | None = None
+
+
+@dataclass(frozen=True)
+class ChillPlaceOverride:
+    name: str
+    emoji: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,27 +67,27 @@ class ChillDisplay:
 
 
 DEFAULT_CHILL_PLACES: tuple[ChillPlace, ...] = (
-    ChillPlace(1, "入口のベンチ", ("はじめまして", "気軽"), "まずはここで、ゆっくり空気を眺める席。"),
-    ChillPlace(2, "ロビーソファ", ("雑談", "のんびり"), "通りすがりの会話に混ざりやすい、やわらかい場所。"),
-    ChillPlace(3, "窓際スツール", ("ひと休み", "明るい"), "外の気配を感じながら、少しだけ腰を下ろす席。"),
-    ChillPlace(4, "小さな丸テーブル", ("少人数", "気軽"), "近くの人と軽く話すのにちょうどいいテーブル。"),
-    ChillPlace(5, "カフェカウンター", ("雑談", "作業前"), "飲み物を片手に、その日の調子を整える場所。"),
-    ChillPlace(6, "本棚のそば", ("静か", "読書"), "会話も作業も、少し落ち着いた声になる一角。"),
-    ChillPlace(7, "観葉植物の横", ("すみっこ", "安心"), "ほどよく人の気配がある、静かなすみっこ。"),
-    ChillPlace(8, "ふかふかチェア", ("まったり", "休憩"), "ちょっと疲れた日に沈み込む席。"),
-    ChillPlace(9, "充電席", ("回復", "作業"), "端末も気持ちも、じわっと充電していく場所。"),
-    ChillPlace(10, "いつものカフェ席", ("定位置", "雑談"), "顔なじみの会話が自然に始まる席。"),
-    ChillPlace(12, "静かな作業机", ("集中", "静か"), "少し集中したい日に向いた、整った机。"),
-    ChillPlace(14, "本棚奥の席", ("読書", "隠れ家"), "本棚の奥で、話しかけられすぎずに過ごせる場所。"),
-    ChillPlace(16, "夜更かしテーブル", ("夜", "作業"), "遅い時間のゆるい作業と雑談が似合うテーブル。"),
-    ChillPlace(18, "半個室ソファ", ("少人数", "落ち着く"), "少しこもって、近い人たちと過ごせるソファ。"),
-    ChillPlace(20, "チルラウンジ", ("節目", "まったり"), "ここまで来た人のための、広めでゆるいラウンジ。"),
-    ChillPlace(25, "窓辺の作業部屋", ("集中", "景色"), "景色を横目に、ゆっくり手を動かす部屋。"),
-    ChillPlace(30, "深夜の作業部屋", ("深夜", "集中"), "静かな夜に、ぽつぽつ人が集まる作業部屋。"),
-    ChillPlace(40, "中庭ベンチ", ("外気", "休憩"), "少し外に出た気分で、肩の力を抜けるベンチ。"),
-    ChillPlace(50, "暖炉前", ("常連", "ぬくもり"), "長くいる人たちの会話がゆっくり続く場所。"),
-    ChillPlace(75, "屋上テラス", ("夜風", "特別"), "夜風にあたりながら、静かに話せる特別席。"),
-    ChillPlace(100, "常連席", ("記念", "定位置"), "ここまで過ごしてきた人だけの、ちょっと誇らしい席。"),
+    ChillPlace(1, "入口のベンチ", "🪑", ("はじめまして", "気軽"), "まずはここで、ゆっくり空気を眺める席。"),
+    ChillPlace(2, "ロビーソファ", "🛋️", ("雑談", "のんびり"), "通りすがりの会話に混ざりやすい、やわらかい場所。"),
+    ChillPlace(3, "窓際スツール", "🪟", ("ひと休み", "明るい"), "外の気配を感じながら、少しだけ腰を下ろす席。"),
+    ChillPlace(4, "小さな丸テーブル", "☕", ("少人数", "気軽"), "近くの人と軽く話すのにちょうどいいテーブル。"),
+    ChillPlace(5, "カフェカウンター", "🥤", ("雑談", "作業前"), "飲み物を片手に、その日の調子を整える場所。"),
+    ChillPlace(6, "本棚のそば", "📚", ("静か", "読書"), "会話も作業も、少し落ち着いた声になる一角。"),
+    ChillPlace(7, "観葉植物の横", "🪴", ("すみっこ", "安心"), "ほどよく人の気配がある、静かなすみっこ。"),
+    ChillPlace(8, "ふかふかチェア", "💤", ("まったり", "休憩"), "ちょっと疲れた日に沈み込む席。"),
+    ChillPlace(9, "充電席", "🔌", ("回復", "作業"), "端末も気持ちも、じわっと充電していく場所。"),
+    ChillPlace(10, "いつものカフェ席", "☕", ("定位置", "雑談"), "顔なじみの会話が自然に始まる席。"),
+    ChillPlace(12, "静かな作業机", "📝", ("集中", "静か"), "少し集中したい日に向いた、整った机。"),
+    ChillPlace(14, "本棚奥の席", "📖", ("読書", "隠れ家"), "本棚の奥で、話しかけられすぎずに過ごせる場所。"),
+    ChillPlace(16, "夜更かしテーブル", "🌙", ("夜", "作業"), "遅い時間のゆるい作業と雑談が似合うテーブル。"),
+    ChillPlace(18, "半個室ソファ", "🕯️", ("少人数", "落ち着く"), "少しこもって、近い人たちと過ごせるソファ。"),
+    ChillPlace(20, "チルラウンジ", "🍵", ("節目", "まったり"), "ここまで来た人のための、広めでゆるいラウンジ。"),
+    ChillPlace(25, "窓辺の作業部屋", "🌤️", ("集中", "景色"), "景色を横目に、ゆっくり手を動かす部屋。"),
+    ChillPlace(30, "深夜の作業部屋", "🌃", ("深夜", "集中"), "静かな夜に、ぽつぽつ人が集まる作業部屋。"),
+    ChillPlace(40, "中庭ベンチ", "🌿", ("外気", "休憩"), "少し外に出た気分で、肩の力を抜けるベンチ。"),
+    ChillPlace(50, "暖炉前", "🔥", ("常連", "ぬくもり"), "長くいる人たちの会話がゆっくり続く場所。"),
+    ChillPlace(75, "屋上テラス", "🌌", ("夜風", "特別"), "夜風にあたりながら、静かに話せる特別席。"),
+    ChillPlace(100, "常連席", "🏆", ("記念", "定位置"), "ここまで過ごしてきた人だけの、ちょっと誇らしい席。"),
 )
 
 
@@ -124,10 +131,15 @@ async def init_schema(pool: asyncpg.Pool) -> None:
                 guild_id       BIGINT NOT NULL,
                 required_level INTEGER NOT NULL CHECK (required_level >= 1),
                 name           TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
+                emoji          TEXT CHECK (emoji IS NULL OR char_length(emoji) BETWEEN 1 AND 40),
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (guild_id, required_level)
             )
             """
+        )
+        await con.execute(
+            "ALTER TABLE guild_chill_places ADD COLUMN IF NOT EXISTS emoji TEXT "
+            "CHECK (emoji IS NULL OR char_length(emoji) BETWEEN 1 AND 40)"
         )
         await con.execute(
             """
@@ -148,12 +160,15 @@ async def load_all_configs(pool: asyncpg.Pool) -> dict[int, GuildConfig]:
     return {r["guild_id"]: _row_to_config(r) for r in rows}
 
 
-async def load_all_chill_place_overrides(pool: asyncpg.Pool) -> dict[int, dict[int, str]]:
+async def load_all_chill_place_overrides(pool: asyncpg.Pool) -> dict[int, dict[int, ChillPlaceOverride]]:
     async with pool.acquire() as con:
-        rows = await con.fetch("SELECT guild_id, required_level, name FROM guild_chill_places")
-    overrides: dict[int, dict[int, str]] = {}
+        rows = await con.fetch("SELECT guild_id, required_level, name, emoji FROM guild_chill_places")
+    overrides: dict[int, dict[int, ChillPlaceOverride]] = {}
     for row in rows:
-        overrides.setdefault(row["guild_id"], {})[row["required_level"]] = row["name"]
+        overrides.setdefault(row["guild_id"], {})[row["required_level"]] = ChillPlaceOverride(
+            name=row["name"],
+            emoji=row["emoji"],
+        )
     return overrides
 
 
@@ -166,18 +181,25 @@ async def load_all_user_chill_levels(pool: asyncpg.Pool) -> dict[int, dict[int, 
     return selections
 
 
-async def upsert_chill_place(pool: asyncpg.Pool, guild_id: int, required_level: int, name: str) -> None:
+async def upsert_chill_place(
+    pool: asyncpg.Pool,
+    guild_id: int,
+    required_level: int,
+    name: str,
+    emoji: str | None = None,
+) -> None:
     async with pool.acquire() as con:
         await con.execute(
             """
-            INSERT INTO guild_chill_places (guild_id, required_level, name)
-            VALUES ($1, $2, $3)
+            INSERT INTO guild_chill_places (guild_id, required_level, name, emoji)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (guild_id, required_level) DO UPDATE
-            SET name = EXCLUDED.name, updated_at = NOW()
+            SET name = EXCLUDED.name, emoji = EXCLUDED.emoji, updated_at = NOW()
             """,
             guild_id,
             required_level,
             name,
+            emoji,
         )
 
 
@@ -324,14 +346,19 @@ def truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
-def build_chill_places(overrides: dict[int, str] | None = None) -> tuple[ChillPlace, ...]:
+def format_chill_place_name(place: ChillPlace) -> str:
+    return f"{place.emoji} {place.name}" if place.emoji else place.name
+
+
+def build_chill_places(overrides: dict[int, ChillPlaceOverride] | None = None) -> tuple[ChillPlace, ...]:
     by_level = {place.required_level: place for place in DEFAULT_CHILL_PLACES}
     if overrides:
-        for level, name in overrides.items():
+        for level, override in overrides.items():
             default = by_level.get(level)
             tags = default.tags if default is not None else ()
             description = default.description if default is not None else None
-            by_level[level] = ChillPlace(level, name, tags=tags, description=description)
+            emoji = override.emoji if override.emoji is not None else default.emoji if default is not None else None
+            by_level[level] = ChillPlace(level, override.name, emoji=emoji, tags=tags, description=description)
     return tuple(by_level[level] for level in sorted(by_level))
 
 
@@ -362,7 +389,7 @@ def resolve_chill_display(
 def format_chill_display(display: ChillDisplay) -> str:
     lines: list[str] = []
     if display.current is not None:
-        lines.append(f"{display.current.name} (Lv.{display.current.required_level})")
+        lines.append(f"{format_chill_place_name(display.current)} (Lv.{display.current.required_level})")
         if display.current.tags:
             lines.append(" / ".join(display.current.tags))
         if display.current.description:
@@ -370,7 +397,7 @@ def format_chill_display(display: ChillDisplay) -> str:
     else:
         lines.append("まだ解放されていません")
     if display.next_place is not None:
-        lines.append(f"次の解放: {display.next_place.name} Lv.{display.next_place.required_level}")
+        lines.append(f"次の解放: {format_chill_place_name(display.next_place)} Lv.{display.next_place.required_level}")
     if display.selected_locked:
         lines.append("選択中の場所は現在レベルでは未解放です")
     return "\n".join(lines)
@@ -385,7 +412,7 @@ def format_chill_list(places: tuple[ChillPlace, ...], level: int | None = None) 
             prefix = "✓"
         else:
             prefix = "□"
-        lines.append(f"{prefix} Lv.{place.required_level} {place.name}")
+        lines.append(f"{prefix} Lv.{place.required_level} {format_chill_place_name(place)}")
     return "\n".join(lines)
 
 
@@ -505,7 +532,7 @@ class IntroBot(discord.Client):
         self.http_session: aiohttp.ClientSession | None = None
         # (guild_id, user_id) -> (level_info, expiry_monotonic)
         self.level_cache: dict[tuple[int, int], tuple[tuple[int, float] | None, float]] = {}
-        self.chill_place_overrides: dict[int, dict[int, str]] = {}
+        self.chill_place_overrides: dict[int, dict[int, ChillPlaceOverride]] = {}
         self.user_chill_levels: dict[int, dict[int, int]] = {}
         register_commands(self.tree, self)
 
@@ -1023,27 +1050,35 @@ def register_commands(tree: app_commands.CommandTree, bot: "IntroBot") -> None:
     )
 
     @chill_place_group.command(name="add", description="レベルごとのチル場所を追加・変更")
-    @app_commands.describe(level="解放レベル", name="場所名")
+    @app_commands.describe(level="解放レベル", name="場所名", emoji="表示する絵文字。標準絵文字推奨")
     async def chill_place_add(
         interaction: discord.Interaction,
         level: app_commands.Range[int, 1, 1000],
         name: app_commands.Range[str, 1, 80],
+        emoji: app_commands.Range[str, 1, 40] | None = None,
     ) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
         clean_name = name.strip()
+        clean_emoji = emoji.strip() if emoji is not None else None
+        if clean_emoji == "":
+            clean_emoji = None
         if not clean_name:
             await interaction.response.send_message("場所名を入力してください。", ephemeral=True)
             return
         try:
-            await upsert_chill_place(bot.pool, interaction.guild_id, level, clean_name)
+            await upsert_chill_place(bot.pool, interaction.guild_id, level, clean_name, clean_emoji)
         except Exception as e:
             log.error("upsert_chill_place failed: %s", e)
             await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
             return
-        bot.chill_place_overrides.setdefault(interaction.guild_id, {})[level] = clean_name
+        bot.chill_place_overrides.setdefault(interaction.guild_id, {})[level] = ChillPlaceOverride(
+            name=clean_name,
+            emoji=clean_emoji,
+        )
+        place = next(p for p in bot.get_chill_places(interaction.guild_id) if p.required_level == level)
         await interaction.response.send_message(
-            f"Lv.{level} のチル場所を「{clean_name}」に設定しました。",
+            f"Lv.{level} のチル場所を「{format_chill_place_name(place)}」に設定しました。",
             ephemeral=True,
         )
 
