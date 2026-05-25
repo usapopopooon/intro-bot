@@ -611,6 +611,126 @@ def build_user_stats_view(stats_url: str | None) -> discord.ui.View | None:
     return view
 
 
+class ChillPlaceSelect(discord.ui.Select):
+    def __init__(self, bot, guild_id: int, user_id: int, current_level: int) -> None:
+        self.bot = bot
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.current_level = current_level
+        places = bot.get_chill_places(guild_id)
+        options = [
+            discord.SelectOption(
+                label=format_chill_choice_name(place)[:100],
+                value=str(place.required_level),
+                description=truncate(place.description or "", 100) or None,
+            )
+            for place in places
+            if place.required_level <= current_level
+        ][:25]
+        super().__init__(
+            placeholder="自己紹介に表示するチル場所を選択",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_place = resolve_chill_place_selection(self.bot.get_chill_places(self.guild_id), self.values[0])
+        if selected_place is None:
+            await interaction.response.send_message("そのチル場所は設定されていません。", ephemeral=True)
+            return
+        level_info = await self.bot.get_user_level(self.guild_id, self.user_id)
+        if level_info is None:
+            await interaction.response.send_message("現在レベルを取得できませんでした。", ephemeral=True)
+            return
+        current_level, _ = level_info
+        if selected_place.required_level > current_level:
+            await interaction.response.send_message(
+                (
+                    f"{selected_place.name} は Lv.{selected_place.required_level} で解放されます。"
+                    f"現在は Lv.{current_level} です。"
+                ),
+                ephemeral=True,
+            )
+            return
+        try:
+            await set_user_chill_level(
+                self.bot.pool,
+                self.guild_id,
+                self.user_id,
+                selected_place.required_level,
+            )
+        except Exception as e:
+            log.error("set_user_chill_level failed: %s", e)
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        self.bot.user_chill_levels.setdefault(self.guild_id, {})[self.user_id] = selected_place.required_level
+        await interaction.response.edit_message(content="チル場所を設定しました。", view=None)
+        await interaction.followup.send(f"チル場所を「{selected_place.name}」に設定しました。")
+
+
+class ChillPlaceSelectView(discord.ui.View):
+    def __init__(self, bot, guild_id: int, user_id: int, current_level: int) -> None:
+        super().__init__(timeout=180)
+        self.add_item(ChillPlaceSelect(bot, guild_id, user_id, current_level))
+
+
+class DynamicChillPlaceButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"intro:chill:set:(?P<guild_id>\d+):(?P<user_id>\d+)",
+):
+    def __init__(self, guild_id: int, user_id: int) -> None:
+        self.guild_id = guild_id
+        self.user_id = user_id
+        super().__init__(
+            discord.ui.Button(
+                label="チル場所を設定",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"intro:chill:set:{guild_id}:{user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        _interaction: discord.Interaction,
+        _item: discord.ui.Item,
+        match,
+    ):
+        return cls(guild_id=int(match["guild_id"]), user_id=int(match["user_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("このチル場所を設定できるのは本人だけです。", ephemeral=True)
+            return
+        bot = interaction.client
+        level_info = await bot.get_user_level(self.guild_id, self.user_id)
+        if level_info is None:
+            await interaction.response.send_message("現在レベルを取得できませんでした。", ephemeral=True)
+            return
+        current_level, _ = level_info
+        if not any(place.required_level <= current_level for place in bot.get_chill_places(self.guild_id)):
+            await interaction.response.send_message("選択できるチル場所がまだありません。", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "自己紹介に表示するチル場所を選んでください。",
+            view=ChillPlaceSelectView(bot, self.guild_id, self.user_id, current_level),
+            ephemeral=True,
+        )
+
+
+class IntroActionView(discord.ui.View):
+    def __init__(self, _bot, guild_id: int, user_id: int, stats_url: str | None) -> None:
+        super().__init__(timeout=None)
+        self.add_item(DynamicChillPlaceButton(guild_id, user_id))
+        if stats_url is not None:
+            self.add_item(discord.ui.Button(label="ユーザー統計を開く", url=stats_url))
+
+
+def build_intro_view(bot, guild_id: int, user_id: int, stats_url: str | None) -> discord.ui.View:
+    return IntroActionView(bot, guild_id, user_id, stats_url)
+
+
 def serialize_chill_place(place: ChillPlace | None) -> dict | None:
     if place is None:
         return None
@@ -733,6 +853,7 @@ class IntroBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
+        self.add_dynamic_items(DynamicChillPlaceButton)
         self.configs = await load_all_configs(self.pool)
         self.chill_place_overrides = await load_all_chill_place_overrides(self.pool)
         self.user_chill_levels = await load_all_user_chill_levels(self.pool)
@@ -975,7 +1096,7 @@ class IntroBot(discord.Client):
                         chill_display=chill_display,
                         include_stats_link=False,
                     ),
-                    view=build_user_stats_view(stats_url),
+                    view=build_intro_view(self, member.guild.id, member.id, stats_url),
                     allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False),
                 )
             except discord.Forbidden:
@@ -1012,6 +1133,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
                 "チル場所:\n"
                 "- `/intro-chill list` 解放状況を見る\n"
                 "- `/intro-chill set place:<場所名>` 自己紹介に出す場所を選ぶ\n"
+                "- 自己紹介 embed の「チル場所を設定」ボタンからドロップダウンで選ぶ\n"
                 "- `/intro-chill mine` 現在の選択を見る\n"
                 "- `/intro-chill clear` 選択を解除して、現在レベルの最高解放場所を自動表示する"
             )
@@ -1125,7 +1247,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
                 chill_display=chill_display,
                 include_stats_link=False,
             ),
-            view=build_user_stats_view(stats_url),
+            view=build_intro_view(bot, interaction.guild_id, user.id, stats_url),
         )
 
     chill_group = app_commands.Group(

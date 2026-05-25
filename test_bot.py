@@ -5,6 +5,10 @@ import api
 import bot
 
 
+def _component_label(component):
+    return getattr(component, "label", None) or getattr(getattr(component, "item", None), "label", None)
+
+
 def test_truncate_below_limit():
     assert bot.truncate("hello", 100) == "hello"
 
@@ -95,6 +99,31 @@ def test_build_user_stats_view_contains_link_button():
     button = view.children[0]
     assert button.label == "ユーザー統計を開く"
     assert button.url == "https://stats.example.com/u/100/level?days=30"
+
+
+def test_build_intro_view_contains_chill_button_without_stats_url():
+    async def build_view():
+        return bot.build_intro_view(SimpleNamespace(), 42, 100, None)
+
+    view = asyncio.run(build_view())
+
+    assert len(view.children) == 1
+    button = view.children[0]
+    assert _component_label(button) == "チル場所を設定"
+
+
+def test_build_intro_view_contains_chill_and_stats_buttons():
+    async def build_view():
+        return bot.build_intro_view(SimpleNamespace(), 42, 100, "https://stats.example.com/u/100/level?days=30")
+
+    view = asyncio.run(build_view())
+
+    assert len(view.children) == 2
+    labels = [_component_label(child) for child in view.children]
+    urls = [getattr(child, "url", None) for child in view.children]
+    assert "チル場所を設定" in labels
+    assert "ユーザー統計を開く" in labels
+    assert "https://stats.example.com/u/100/level?days=30" in urls
 
 
 def _row(
