@@ -1198,7 +1198,6 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         bot.user_chill_levels.setdefault(interaction.guild_id, {})[interaction.user.id] = selected_place.required_level
         await interaction.response.send_message(
             f"チル場所を「{selected_place.name}」に設定しました。",
-            ephemeral=True,
         )
 
     @chill_group.command(name="clear", description="チル場所の選択を解除")
@@ -1213,7 +1212,6 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             bot.user_chill_levels[interaction.guild_id].pop(interaction.user.id, None)
         await interaction.response.send_message(
             "チル場所の選択を解除しました。現在レベルで解放済みの一番上の場所を自動表示します。",
-            ephemeral=True,
         )
 
     @chill_group.command(name="mine", description="現在のチル場所を表示")
@@ -1223,7 +1221,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         if display is None:
             await interaction.response.send_message("現在レベルを取得できませんでした。", ephemeral=True)
             return
-        await interaction.response.send_message(format_chill_display(display), ephemeral=True)
+        await interaction.response.send_message(format_chill_display(display))
 
     config_group = app_commands.Group(
         name="intro-config",
