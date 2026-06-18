@@ -405,6 +405,38 @@ async def remove_excluded_vc(pool: asyncpg.Pool, guild_id: int, channel_id: int)
     return _row_to_config(row) if row is not None else None
 
 
+async def prune_unavailable_excluded_vcs_in_db(
+    pool: asyncpg.Pool,
+    guild_id: int,
+    available_channel_ids: frozenset[int],
+) -> tuple[GuildConfig | None, frozenset[int]]:
+    async with pool.acquire() as con:
+        async with con.transaction():
+            row = await con.fetchrow(
+                f"SELECT {_SELECT_COLUMNS} FROM bot_config WHERE guild_id = $1 FOR UPDATE",
+                guild_id,
+            )
+            if row is None:
+                return None, frozenset()
+
+            cfg = _row_to_config(row)
+            kept, removed = split_available_excluded_vc_ids(cfg.excluded_vc_ids, available_channel_ids)
+            if not removed:
+                return cfg, frozenset()
+
+            updated = await con.fetchrow(
+                f"""
+                UPDATE bot_config
+                SET excluded_vc_ids = $2::BIGINT[], updated_at = NOW()
+                WHERE guild_id = $1
+                RETURNING {_SELECT_COLUMNS}
+                """,
+                guild_id,
+                sorted(kept),
+            )
+    return (_row_to_config(updated) if updated is not None else None), removed
+
+
 async def add_nudge_exempt_role(pool: asyncpg.Pool, guild_id: int, role_id: int) -> GuildConfig:
     async with pool.acquire() as con:
         row = await con.fetchrow(
@@ -567,6 +599,15 @@ def format_chill_list(places: tuple[ChillPlace, ...], level: int | None = None) 
             prefix = "□"
         lines.append(f"{prefix} Lv.{place.required_level} {format_chill_place_name(place)}")
     return "\n".join(lines)
+
+
+def split_available_excluded_vc_ids(
+    excluded_vc_ids: frozenset[int],
+    available_voice_channel_ids: frozenset[int],
+) -> tuple[frozenset[int], frozenset[int]]:
+    kept = excluded_vc_ids & available_voice_channel_ids
+    removed = excluded_vc_ids - kept
+    return kept, removed
 
 
 def _pick_image_attachment(attachments):
@@ -899,6 +940,36 @@ class IntroBot(discord.Client):
         ch = self.get_channel(cfg.intro_channel_id)
         return ch if isinstance(ch, discord.TextChannel) else None
 
+    def available_voice_channel_ids(self, guild: discord.Guild) -> frozenset[int]:
+        member = guild.me
+        ids: set[int] = set()
+        for channel in guild.voice_channels:
+            if member is not None and not channel.permissions_for(member).view_channel:
+                continue
+            ids.add(channel.id)
+        return frozenset(ids)
+
+    async def prune_unavailable_excluded_vcs(self, guild: discord.Guild) -> tuple[GuildConfig | None, frozenset[int]]:
+        cfg = self.configs.get(guild.id)
+        if cfg is None:
+            return cfg, frozenset()
+
+        updated, removed = await prune_unavailable_excluded_vcs_in_db(
+            self.pool,
+            guild.id,
+            self.available_voice_channel_ids(guild),
+        )
+        if updated is not None:
+            self.configs[guild.id] = updated
+        if not removed:
+            return updated, frozenset()
+        log.info(
+            "removed unavailable excluded VCs for guild=%s: %s",
+            guild.id,
+            ",".join(str(cid) for cid in sorted(removed)),
+        )
+        return updated, removed
+
     def _cache_get(self, guild_id: int, user_id: int) -> int | None:
         return self.intro_message_id.get(guild_id, {}).get(user_id)
 
@@ -958,6 +1029,27 @@ class IntroBot(discord.Client):
             getattr(self.user, "id", None),
             len(self.guilds),
         )
+        for guild in self.guilds:
+            try:
+                await self.prune_unavailable_excluded_vcs(guild)
+            except Exception as e:
+                log.error("failed to prune excluded VCs for guild=%s: %s", guild.id, e)
+
+    async def on_guild_channel_delete(self, channel) -> None:
+        if not isinstance(channel, discord.VoiceChannel):
+            return
+        try:
+            await self.prune_unavailable_excluded_vcs(channel.guild)
+        except Exception as e:
+            log.error("failed to prune excluded VCs after channel delete guild=%s: %s", channel.guild.id, e)
+
+    async def on_guild_channel_update(self, _before, after) -> None:
+        if not isinstance(after, discord.VoiceChannel):
+            return
+        try:
+            await self.prune_unavailable_excluded_vcs(after.guild)
+        except Exception as e:
+            log.error("failed to prune excluded VCs after channel update guild=%s: %s", after.guild.id, e)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
@@ -1352,11 +1444,31 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         guild_only=True,
     )
 
+    async def _config_after_excluded_vc_pruning(
+        interaction: discord.Interaction,
+    ) -> tuple[GuildConfig | None, frozenset[int]] | None:
+        if interaction.guild is None:
+            return bot.configs.get(interaction.guild_id), frozenset()
+        try:
+            return await bot.prune_unavailable_excluded_vcs(interaction.guild)
+        except Exception as e:
+            log.error("prune_unavailable_excluded_vcs failed: %s", e)
+            await interaction.response.send_message("除外 VC の自動整理に失敗しました。", ephemeral=True)
+            return None
+
+    def _format_excluded_vc_prune_note(removed: frozenset[int]) -> str:
+        if not removed:
+            return ""
+        return f"\n\n削除済みまたはアクセス不可の除外 VC を {len(removed)} 件、自動解除しました。"
+
     @config_group.command(name="show", description="現在のギルド設定を表示")
     async def show(interaction: discord.Interaction) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
-        cfg = bot.configs.get(interaction.guild_id)
+        result = await _config_after_excluded_vc_pruning(interaction)
+        if result is None:
+            return
+        cfg, removed_excluded_vcs = result
         if cfg is None:
             text = (
                 f"intro_channel: 未設定\n"
@@ -1376,6 +1488,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
                 f"excluded_vcs: {excluded_text}\n"
                 f"nudge_exempt_roles: {exempt_text}"
             )
+        text += _format_excluded_vc_prune_note(removed_excluded_vcs)
         await interaction.response.send_message(text, ephemeral=True)
 
     @config_group.command(name="intro-channel", description="自己紹介チャンネルを設定")
@@ -1544,10 +1657,13 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     ) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
-        existing = bot.configs.get(interaction.guild_id)
+        result = await _config_after_excluded_vc_pruning(interaction)
+        if result is None:
+            return
+        existing, removed_excluded_vcs = result
         if existing is not None and channel.id in existing.excluded_vc_ids:
             await interaction.response.send_message(
-                f"{channel.mention} は既に除外されています。",
+                f"{channel.mention} は既に除外されています。{_format_excluded_vc_prune_note(removed_excluded_vcs)}",
                 ephemeral=True,
             )
             return
@@ -1559,7 +1675,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         bot.configs[interaction.guild_id] = cfg
         await interaction.response.send_message(
-            f"{channel.mention} を自動投稿の対象から外しました。",
+            f"{channel.mention} を自動投稿の対象から外しました。{_format_excluded_vc_prune_note(removed_excluded_vcs)}",
             ephemeral=True,
         )
 
@@ -1571,10 +1687,13 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     ) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
-        existing = bot.configs.get(interaction.guild_id)
+        result = await _config_after_excluded_vc_pruning(interaction)
+        if result is None:
+            return
+        existing, removed_excluded_vcs = result
         if existing is None or channel.id not in existing.excluded_vc_ids:
             await interaction.response.send_message(
-                f"{channel.mention} は除外リストにありません。",
+                f"{channel.mention} は除外リストにありません。{_format_excluded_vc_prune_note(removed_excluded_vcs)}",
                 ephemeral=True,
             )
             return
@@ -1589,7 +1708,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         bot.configs[interaction.guild_id] = cfg
         await interaction.response.send_message(
-            f"{channel.mention} の除外を解除しました。",
+            f"{channel.mention} の除外を解除しました。{_format_excluded_vc_prune_note(removed_excluded_vcs)}",
             ephemeral=True,
         )
 
@@ -1597,11 +1716,18 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     async def exclude_list(interaction: discord.Interaction) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
-        cfg = bot.configs.get(interaction.guild_id)
+        result = await _config_after_excluded_vc_pruning(interaction)
+        if result is None:
+            return
+        cfg, removed_excluded_vcs = result
         if cfg is None or not cfg.excluded_vc_ids:
-            await interaction.response.send_message("除外 VC はありません。", ephemeral=True)
+            await interaction.response.send_message(
+                "除外 VC はありません。" + _format_excluded_vc_prune_note(removed_excluded_vcs),
+                ephemeral=True,
+            )
             return
         text = "除外 VC:\n" + "\n".join(f"- <#{cid}>" for cid in cfg.excluded_vc_ids)
+        text += _format_excluded_vc_prune_note(removed_excluded_vcs)
         await interaction.response.send_message(text, ephemeral=True)
 
     nudge_exempt_group = app_commands.Group(

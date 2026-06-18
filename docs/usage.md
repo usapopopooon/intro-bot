@@ -265,6 +265,7 @@ nudge_exempt_roles: @ゲスト, @Bot運用
 ### `/intro-config exclude-vc list`
 
 現在このギルドで除外している VC の一覧を ephemeral で表示する。除外がない場合は「除外 VC はありません。」と返る。
+削除済み、または Bot からアクセスできなくなった VC が除外リストに残っている場合は、チャンネル削除/権限更新の検知時や、この一覧表示、`/intro-config show` の実行時に自動で解除される。
 
 ### `/intro-config nudge-exempt-role add <role>`
 

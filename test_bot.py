@@ -176,6 +176,63 @@ def test_row_to_config_passes_through_other_fields():
     assert cfg.cooldown_seconds == 300
 
 
+def test_split_available_excluded_vc_ids_keeps_accessible_channels():
+    kept, removed = bot.split_available_excluded_vc_ids(
+        frozenset({10, 20, 30}),
+        frozenset({10, 30, 40}),
+    )
+
+    assert kept == frozenset({10, 30})
+    assert removed == frozenset({20})
+
+
+def test_split_available_excluded_vc_ids_noop_without_removed_channels():
+    kept, removed = bot.split_available_excluded_vc_ids(
+        frozenset({10, 20}),
+        frozenset({10, 20, 30}),
+    )
+
+    assert kept == frozenset({10, 20})
+    assert removed == frozenset()
+
+
+def test_prune_unavailable_excluded_vcs_uses_db_current_config(monkeypatch):
+    pool = object()
+    memory_cfg = bot.GuildConfig(
+        guild_id=1,
+        intro_channel_id=100,
+        cooldown_seconds=60,
+        excluded_vc_ids=frozenset({10, 20}),
+        nudge_exempt_role_ids=frozenset(),
+    )
+    db_cfg = bot.GuildConfig(
+        guild_id=1,
+        intro_channel_id=100,
+        cooldown_seconds=60,
+        excluded_vc_ids=frozenset({10, 30}),
+        nudge_exempt_role_ids=frozenset(),
+    )
+    calls = {}
+
+    async def fake_prune_in_db(received_pool, guild_id, available_channel_ids):
+        calls["args"] = (received_pool, guild_id, available_channel_ids)
+        return db_cfg, frozenset({20})
+
+    monkeypatch.setattr(bot, "prune_unavailable_excluded_vcs_in_db", fake_prune_in_db)
+    client = SimpleNamespace(
+        pool=pool,
+        configs={1: memory_cfg},
+        available_voice_channel_ids=lambda _guild: frozenset({10, 30}),
+    )
+
+    cfg, removed = asyncio.run(bot.IntroBot.prune_unavailable_excluded_vcs(client, SimpleNamespace(id=1)))
+
+    assert cfg == db_cfg
+    assert removed == frozenset({20})
+    assert client.configs[1] == db_cfg
+    assert calls["args"] == (pool, 1, frozenset({10, 30}))
+
+
 def test_build_chill_places_uses_defaults():
     places = bot.build_chill_places()
 
