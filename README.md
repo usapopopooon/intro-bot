@@ -66,6 +66,11 @@ docker compose down       # 停止のみ
 docker compose down -v    # ボリュームごと削除(DB リセット)
 ```
 
+## Coolify デプロイ
+
+Coolify 用の Compose 定義は `docker-compose.coolify.yml`、変数例は
+`.env.coolify.example` にある。手順は [docs/coolify.md](docs/coolify.md) を参照。
+
 ## Railway デプロイ
 
 1. Railway で **New Project** → **Deploy from GitHub repo** で本リポジトリを選択(`railway.json` と `Dockerfile` を自動検出)
