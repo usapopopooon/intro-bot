@@ -63,7 +63,7 @@ services:
       start_period: 20s
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-192m}
     cpus: "${POSTGRES_CPUS:-0.50}"
@@ -72,7 +72,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-intro}
       POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES:-intro-postgres-password}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres18-data:/var/lib/postgresql/data
     healthcheck:
       test:
         [
@@ -85,4 +85,4 @@ services:
       start_period: 20s
 
 volumes:
-  postgres-data:
+  postgres18-data:
