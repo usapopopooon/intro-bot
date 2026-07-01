@@ -75,7 +75,7 @@ the `api` service.
 Example:
 
 ```text
-https://intro-bot.usapo.space
+https://intro-bot.example.com
 ```
 
 Then call:
