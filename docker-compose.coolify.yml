@@ -72,7 +72,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-intro}
       POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES:-intro-postgres-password}
     volumes:
-      - postgres18-data:/var/lib/postgresql/data
+      - postgres18-data:/var/lib/postgresql
     healthcheck:
       test:
         [
