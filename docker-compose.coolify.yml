@@ -11,7 +11,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-intro}:${SERVICE_PASSWORD_POSTGRES:-intro-postgres-password}@postgres:5432/${POSTGRES_DB:-intro_bot}
-      DISCORD_TOKENS: ${DISCORD_TOKENS:-${DISCORD_TOKEN:?set DISCORD_TOKEN or DISCORD_TOKENS}}
+      BOT_ENABLED: ${BOT_ENABLED:-false}
+      DISCORD_TOKENS: ${DISCORD_TOKENS:-${DISCORD_TOKEN:-}}
       COOLDOWN_SECONDS: ${COOLDOWN_SECONDS:-60}
       INTRO_HISTORY_MAX_SCAN: ${INTRO_HISTORY_MAX_SCAN:-5000}
       LEVEL_API_BASE: ${LEVEL_API_BASE:-}
@@ -20,7 +21,12 @@ services:
       USER_STATS_SITE_GUILD_ID: ${USER_STATS_SITE_GUILD_ID:-}
       USER_STATS_SITE_BASE_URL: ${USER_STATS_SITE_BASE_URL:-}
       EXTERNAL_API_KEY: ${EXTERNAL_API_KEY:-}
-    command: ["./scripts/start-bot.sh"]
+    command:
+      [
+        "sh",
+        "-lc",
+        'if [ "$${BOT_ENABLED}" != "true" ]; then echo "bot disabled; set BOT_ENABLED=true after stopping the Railway bot"; sleep infinity; fi; ./scripts/start-bot.sh',
+      ]
 
   api:
     build: .

@@ -21,7 +21,15 @@ domain if another service or browser client calls the intro API.
 
 ## Variables
 
-Copy `.env.coolify.example` into Coolify Variables, then set at least one of:
+Copy `.env.coolify.example` into Coolify Variables.
+
+Keep the bot disabled while Railway is still running the same Discord token:
+
+```text
+BOT_ENABLED=false
+```
+
+Set at least one token before the final cutover:
 
 ```text
 DISCORD_TOKEN=...
@@ -39,6 +47,25 @@ INTRO_API_KEY=...
 `INTRO_API_KEY` can be left empty if the external intro API is not used. Empty
 API keys make protected endpoints return `401`, while `/healthz` stays public for
 health checks.
+
+## Railway Coexistence
+
+Do not run the same Discord bot token on Railway and Coolify at the same time.
+During migration, deploy Coolify with:
+
+```text
+BOT_ENABLED=false
+```
+
+This keeps the Coolify `bot` container alive but idle, so the API and database can
+be prepared without logging in to Discord. When cutting over:
+
+1. Stop the Railway bot service.
+2. Set `BOT_ENABLED=true` in Coolify Variables.
+3. Redeploy from the Coolify UI.
+
+If both platforms repeatedly start the same token, Discord can rate-limit login
+requests with `429 Too Many Requests`.
 
 ## Optional API Domain
 
