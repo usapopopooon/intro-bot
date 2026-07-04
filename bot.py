@@ -987,6 +987,34 @@ def _make_intents() -> discord.Intents:
     return intents
 
 
+def _interaction_voice_channel(interaction: discord.Interaction) -> discord.VoiceChannel | None:
+    if isinstance(interaction.channel, discord.VoiceChannel):
+        return interaction.channel
+    if not isinstance(interaction.user, discord.Member) or interaction.user.voice is None:
+        return None
+    channel = interaction.user.voice.channel
+    return channel if isinstance(channel, discord.VoiceChannel) else None
+
+
+def _voice_members(channel: discord.VoiceChannel) -> tuple[discord.Member, ...]:
+    return tuple(member for member in channel.members if not member.bot)
+
+
+def _next_voice_member_index(
+    members: tuple[discord.Member, ...],
+    cursor: int | None,
+    preferred_user_id: int,
+) -> int | None:
+    if not members:
+        return None
+    if cursor is not None:
+        return cursor % len(members)
+    for index, member in enumerate(members):
+        if member.id == preferred_user_id:
+            return index
+    return 0
+
+
 class IntroBot(discord.Client):
     def __init__(self, pool: asyncpg.Pool) -> None:
         super().__init__(intents=_make_intents())
@@ -1004,6 +1032,7 @@ class IntroBot(discord.Client):
         self.level_cache: dict[tuple[int, int], tuple[tuple[int, float] | None, float]] = {}
         self.chill_place_overrides: dict[int, dict[int, ChillPlaceOverride]] = {}
         self.user_chill_levels: dict[int, dict[int, int]] = {}
+        self.intro_command_cursor: dict[tuple[int, int], int] = {}
         register_commands(self.tree, self)
 
     async def setup_hook(self) -> None:
@@ -1046,6 +1075,15 @@ class IntroBot(discord.Client):
         places = self.get_chill_places(guild_id)
         selected_level = self.get_user_chill_level(guild_id, user_id)
         return resolve_chill_display(places, level_info, selected_level)
+
+    def next_voice_intro_member(self, channel: discord.VoiceChannel, preferred_user_id: int) -> discord.Member | None:
+        members = _voice_members(channel)
+        key = (channel.guild.id, channel.id)
+        index = _next_voice_member_index(members, self.intro_command_cursor.get(key), preferred_user_id)
+        if index is None:
+            return None
+        self.intro_command_cursor[key] = (index + 1) % len(members)
+        return members[index]
 
     def resolve_intro_channel(self, guild_id: int) -> discord.TextChannel | None:
         cfg = self.configs.get(guild_id)
@@ -1356,7 +1394,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         else:
             text = (
                 "intro-bot:\n"
-                "- `/intro` 自分の自己紹介を見る\n"
+                "- `/intro` VC参加中は同じVCのメンバーを順番に見る / VC外では自分を見る\n"
                 "- `/intro user:@user` 指定した人の自己紹介を見る\n"
                 "- `/intros` VC にいる全員の自己紹介を見る\n"
                 "- `/intro-chill list` レベルで解放されるチル場所を見る\n"
@@ -1364,17 +1402,17 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             )
         await interaction.response.send_message(text, ephemeral=True)
 
-    @tree.command(name="intros", description="この VC にいる全員の自己紹介を表示")
+    @tree.command(name="intros", description="参加中の VC にいる全員の自己紹介を表示")
     @app_commands.guild_only()
     async def intros_cmd(interaction: discord.Interaction) -> None:
-        channel = interaction.channel
-        if not isinstance(channel, discord.VoiceChannel):
+        channel = _interaction_voice_channel(interaction)
+        if channel is None:
             await interaction.response.send_message(
-                "このコマンドは VC のテキストチャットで実行してください。",
+                "VC に参加している状態で実行してください。",
                 ephemeral=True,
             )
             return
-        members = [m for m in channel.members if not m.bot]
+        members = list(_voice_members(channel))
         if not members:
             await interaction.response.send_message("VC に誰もいません。", ephemeral=True)
             return
@@ -1419,11 +1457,22 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             names = ", ".join(m.display_name for m in missing)
             await interaction.followup.send(f"自己紹介未登録: {names}", ephemeral=True)
 
-    @tree.command(name="intro", description="自己紹介を表示(省略時は自分)")
-    @app_commands.describe(user="自己紹介を表示するメンバー。省略時は自分")
+    @tree.command(name="intro", description="自己紹介を表示(省略時はVCメンバー順/自分)")
+    @app_commands.describe(user="自己紹介を表示するメンバー。省略時はVCメンバー順、VC外では自分")
     @app_commands.guild_only()
     async def intro_cmd(interaction: discord.Interaction, user: discord.Member | None = None) -> None:
-        target = user or interaction.user
+        if user is None:
+            voice_channel = _interaction_voice_channel(interaction)
+            target = (
+                bot.next_voice_intro_member(voice_channel, interaction.user.id)
+                if voice_channel is not None
+                else interaction.user
+            )
+            if target is None:
+                await interaction.response.send_message("VC に誰もいません。", ephemeral=True)
+                return
+        else:
+            target = user
         if target.bot:
             await interaction.response.send_message("Bot の自己紹介はありません。", ephemeral=True)
             return

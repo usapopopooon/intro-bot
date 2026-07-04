@@ -33,7 +33,39 @@ def test_intro_command_user_option_is_optional():
     command = tree.commands["intro"]
     user_parameter = inspect.signature(command.callback).parameters["user"]
     assert user_parameter.default is None
-    assert "省略時は自分" in command.description
+    assert "省略時はVCメンバー順/自分" in command.description
+
+
+def test_voice_members_skips_bots():
+    channel = SimpleNamespace(
+        members=[
+            SimpleNamespace(id=10, bot=False),
+            SimpleNamespace(id=20, bot=True),
+            SimpleNamespace(id=30, bot=False),
+        ]
+    )
+
+    assert [member.id for member in bot._voice_members(channel)] == [10, 30]
+
+
+def test_next_voice_member_index_prefers_requester_without_cursor():
+    members = (
+        SimpleNamespace(id=10),
+        SimpleNamespace(id=20),
+        SimpleNamespace(id=30),
+    )
+
+    assert bot._next_voice_member_index(members, None, 20) == 1
+
+
+def test_next_voice_member_index_uses_cursor_when_present():
+    members = (
+        SimpleNamespace(id=10),
+        SimpleNamespace(id=20),
+        SimpleNamespace(id=30),
+    )
+
+    assert bot._next_voice_member_index(members, 4, 20) == 1
 
 
 def test_truncate_below_limit():
