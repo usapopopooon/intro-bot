@@ -26,6 +26,7 @@ from bot import (
     serialize_chill_display,
     serialize_chill_place,
     set_user_chill_level,
+    sync_level_user_chill_place,
     truncate,
 )
 
@@ -295,6 +296,12 @@ async def set_chill_place_api(request: web.Request) -> web.Response:
         return web.json_response({"detail": "Chill place is locked"}, status=403)
 
     await set_user_chill_level(pool, guild_id, user_id, selected.required_level)
+    await sync_level_user_chill_place(
+        request.app["http_session"],
+        guild_id,
+        user_id,
+        selected.required_level,
+    )
     chill_display = resolve_chill_display(places, level_info, selected.required_level)
 
     return web.json_response(

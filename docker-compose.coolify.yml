@@ -21,6 +21,7 @@ services:
       USER_STATS_SITE_GUILD_ID: ${USER_STATS_SITE_GUILD_ID:-}
       USER_STATS_SITE_BASE_URL: ${USER_STATS_SITE_BASE_URL:-}
       EXTERNAL_API_KEY: ${EXTERNAL_API_KEY:-}
+      LEVEL_CHILL_API_KEY: ${LEVEL_CHILL_API_KEY:-${EXTERNAL_API_KEY:-}}
     command:
       [
         "sh",
@@ -52,6 +53,7 @@ services:
       USER_STATS_SITE_GUILD_ID: ${USER_STATS_SITE_GUILD_ID:-}
       USER_STATS_SITE_BASE_URL: ${USER_STATS_SITE_BASE_URL:-}
       EXTERNAL_API_KEY: ${EXTERNAL_API_KEY:-}
+      LEVEL_CHILL_API_KEY: ${LEVEL_CHILL_API_KEY:-${EXTERNAL_API_KEY:-}}
     command: ["./scripts/start-api.sh"]
     expose:
       - "8000"

@@ -23,6 +23,7 @@ LEVEL_API_BASE = (os.environ.get("LEVEL_API_BASE") or "").rstrip("/")
 LEVEL_API_TIMEOUT_SECONDS = float(os.environ.get("LEVEL_API_TIMEOUT_SECONDS", "3"))
 LEVEL_CACHE_TTL_SECONDS = float(os.environ.get("LEVEL_CACHE_TTL_SECONDS", "60"))
 EXTERNAL_API_KEY = (os.environ.get("EXTERNAL_API_KEY") or "").strip()
+LEVEL_CHILL_API_KEY = (os.environ.get("LEVEL_CHILL_API_KEY") or EXTERNAL_API_KEY).strip()
 USER_STATS_SITE_GUILD_ID = (os.environ.get("USER_STATS_SITE_GUILD_ID") or "").strip()
 USER_STATS_SITE_BASE_URL = (os.environ.get("USER_STATS_SITE_BASE_URL") or "").strip().rstrip("/")
 
@@ -705,6 +706,12 @@ class ChillPlaceSelect(discord.ui.Select):
             log.error("set_user_chill_level failed: %s", e)
             await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
             return
+        await sync_level_user_chill_place(
+            self.bot.http_session,
+            self.guild_id,
+            self.user_id,
+            selected_place.required_level,
+        )
         self.bot.user_chill_levels.setdefault(self.guild_id, {})[self.user_id] = selected_place.required_level
         await interaction.response.edit_message(content="チル場所を設定しました。", view=None)
         await interaction.followup.send(f"チル場所を「{selected_place.name}」に設定しました。")
@@ -862,6 +869,113 @@ async def fetch_user_level(
     if not isinstance(level, int) or not isinstance(progress, (int, float)):
         return None
     return level, float(progress)
+
+
+def build_level_chill_api_headers() -> dict[str, str] | None:
+    if not LEVEL_CHILL_API_KEY:
+        return None
+    return {"Authorization": f"Bearer {LEVEL_CHILL_API_KEY}"}
+
+
+async def sync_level_user_chill_place(
+    session: aiohttp.ClientSession | None,
+    guild_id: int,
+    user_id: int,
+    required_level: int,
+) -> bool:
+    headers = build_level_chill_api_headers()
+    if session is None or not LEVEL_API_BASE or headers is None:
+        return False
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/users/{user_id}/chill-place"
+    try:
+        async with session.put(
+            url,
+            headers=headers,
+            json={"required_level": required_level},
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status < 400:
+                return True
+            log.warning("level chill user sync failed status=%s url=%s", resp.status, url)
+            return False
+    except (aiohttp.ClientError, TimeoutError):
+        log.exception("level chill user sync failed url=%s", url)
+        return False
+
+
+async def clear_level_user_chill_place(
+    session: aiohttp.ClientSession | None,
+    guild_id: int,
+    user_id: int,
+) -> bool:
+    headers = build_level_chill_api_headers()
+    if session is None or not LEVEL_API_BASE or headers is None:
+        return False
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/users/{user_id}/chill-place"
+    try:
+        async with session.delete(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status < 400:
+                return True
+            log.warning("level chill user clear failed status=%s url=%s", resp.status, url)
+            return False
+    except (aiohttp.ClientError, TimeoutError):
+        log.exception("level chill user clear failed url=%s", url)
+        return False
+
+
+async def sync_level_guild_chill_place(
+    session: aiohttp.ClientSession | None,
+    guild_id: int,
+    required_level: int,
+    name: str,
+    emoji: str | None,
+) -> bool:
+    headers = build_level_chill_api_headers()
+    if session is None or not LEVEL_API_BASE or headers is None:
+        return False
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/chill-places/{required_level}"
+    try:
+        async with session.put(
+            url,
+            headers=headers,
+            json={"name": name, "emoji": emoji},
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status < 400:
+                return True
+            log.warning("level chill guild sync failed status=%s url=%s", resp.status, url)
+            return False
+    except (aiohttp.ClientError, TimeoutError):
+        log.exception("level chill guild sync failed url=%s", url)
+        return False
+
+
+async def remove_level_guild_chill_place(
+    session: aiohttp.ClientSession | None,
+    guild_id: int,
+    required_level: int,
+) -> bool:
+    headers = build_level_chill_api_headers()
+    if session is None or not LEVEL_API_BASE or headers is None:
+        return False
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/chill-places/{required_level}"
+    try:
+        async with session.delete(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status < 400:
+                return True
+            log.warning("level chill guild remove failed status=%s url=%s", resp.status, url)
+            return False
+    except (aiohttp.ClientError, TimeoutError):
+        log.exception("level chill guild remove failed url=%s", url)
+        return False
 
 
 def _make_intents() -> discord.Intents:
@@ -1409,6 +1523,12 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             log.error("set_user_chill_level failed: %s", e)
             await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
             return
+        await sync_level_user_chill_place(
+            bot.http_session,
+            interaction.guild_id,
+            interaction.user.id,
+            selected_place.required_level,
+        )
         bot.user_chill_levels.setdefault(interaction.guild_id, {})[interaction.user.id] = selected_place.required_level
         await interaction.response.send_message(
             f"チル場所を「{selected_place.name}」に設定しました。",
@@ -1424,6 +1544,11 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         if interaction.guild_id in bot.user_chill_levels:
             bot.user_chill_levels[interaction.guild_id].pop(interaction.user.id, None)
+        await clear_level_user_chill_place(
+            bot.http_session,
+            interaction.guild_id,
+            interaction.user.id,
+        )
         await interaction.response.send_message(
             "チル場所の選択を解除しました。現在レベルで解放済みの一番上の場所を自動表示します。",
         )
@@ -1600,6 +1725,13 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             name=clean_name,
             emoji=clean_emoji,
         )
+        await sync_level_guild_chill_place(
+            bot.http_session,
+            interaction.guild_id,
+            level,
+            clean_name,
+            clean_emoji,
+        )
         place = next(p for p in bot.get_chill_places(interaction.guild_id) if p.required_level == level)
         await interaction.response.send_message(
             f"Lv.{level} のチル場所を「{format_chill_place_name(place)}」に設定しました。",
@@ -1622,6 +1754,11 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         if interaction.guild_id in bot.chill_place_overrides:
             bot.chill_place_overrides[interaction.guild_id].pop(level, None)
+        await remove_level_guild_chill_place(
+            bot.http_session,
+            interaction.guild_id,
+            level,
+        )
         if not removed:
             await interaction.response.send_message(
                 "カスタム設定はありませんでした。プリセットの場所はそのまま表示されます。",
