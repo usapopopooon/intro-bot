@@ -1356,6 +1356,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         else:
             text = (
                 "intro-bot:\n"
+                "- `/intro` 自分の自己紹介を見る\n"
                 "- `/intro user:@user` 指定した人の自己紹介を見る\n"
                 "- `/intros` VC にいる全員の自己紹介を見る\n"
                 "- `/intro-chill list` レベルで解放されるチル場所を見る\n"
@@ -1418,11 +1419,12 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             names = ", ".join(m.display_name for m in missing)
             await interaction.followup.send(f"自己紹介未登録: {names}", ephemeral=True)
 
-    @tree.command(name="intro", description="指定したメンバーの自己紹介を表示")
-    @app_commands.describe(user="自己紹介を表示するメンバー")
+    @tree.command(name="intro", description="自己紹介を表示(省略時は自分)")
+    @app_commands.describe(user="自己紹介を表示するメンバー。省略時は自分")
     @app_commands.guild_only()
-    async def intro_cmd(interaction: discord.Interaction, user: discord.Member) -> None:
-        if user.bot:
+    async def intro_cmd(interaction: discord.Interaction, user: discord.Member | None = None) -> None:
+        target = user or interaction.user
+        if target.bot:
             await interaction.response.send_message("Bot の自己紹介はありません。", ephemeral=True)
             return
         intro_channel = bot.resolve_intro_channel(interaction.guild_id)
@@ -1432,28 +1434,28 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
 
         await interaction.response.defer()
         try:
-            intro_msg = await bot.find_intro_message(interaction.guild_id, intro_channel, user.id)
+            intro_msg = await bot.find_intro_message(interaction.guild_id, intro_channel, target.id)
         except discord.Forbidden:
             await interaction.followup.send("自己紹介チャンネルの読み取り権限がありません。", ephemeral=True)
             return
         if intro_msg is None:
             await interaction.followup.send(
-                f"{user.display_name} さんの自己紹介はまだ投稿されていません。",
+                f"{target.display_name} さんの自己紹介はまだ投稿されていません。",
                 ephemeral=True,
             )
             return
-        level_info = await bot.get_user_level(interaction.guild_id, user.id)
-        chill_display = await bot.get_chill_display(interaction.guild_id, user.id, level_info)
-        stats_url = build_user_stats_url(interaction.guild_id, user.id)
+        level_info = await bot.get_user_level(interaction.guild_id, target.id)
+        chill_display = await bot.get_chill_display(interaction.guild_id, target.id, level_info)
+        stats_url = build_user_stats_url(interaction.guild_id, target.id)
         await interaction.followup.send(
             embed=build_embed(
-                user,
+                target,
                 intro_msg,
                 level_info=level_info,
                 chill_display=chill_display,
                 include_stats_link=False,
             ),
-            view=build_intro_view(bot, interaction.guild_id, user.id, stats_url),
+            view=build_intro_view(bot, interaction.guild_id, target.id, stats_url),
         )
 
     chill_group = app_commands.Group(

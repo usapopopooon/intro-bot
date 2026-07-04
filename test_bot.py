@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import api
@@ -7,6 +8,32 @@ import bot
 
 def _component_label(component):
     return getattr(component, "label", None) or getattr(getattr(component, "item", None), "label", None)
+
+
+class _FakeCommandTree:
+    def __init__(self):
+        self.commands = {}
+
+    def command(self, *, name, description):
+        def decorator(callback):
+            self.commands[name] = SimpleNamespace(description=description, callback=callback)
+            return callback
+
+        return decorator
+
+    def add_command(self, command):
+        return None
+
+
+def test_intro_command_user_option_is_optional():
+    tree = _FakeCommandTree()
+
+    bot.register_commands(tree, SimpleNamespace())
+
+    command = tree.commands["intro"]
+    user_parameter = inspect.signature(command.callback).parameters["user"]
+    assert user_parameter.default is None
+    assert "省略時は自分" in command.description
 
 
 def test_truncate_below_limit():
