@@ -1,6 +1,7 @@
 # intro-bot API
 
-intro-bot の自己紹介表示内容を外部サービスから取得するための読み取り専用 API。
+intro-bot の自己紹介表示内容を外部サービスから取得し、信頼済みサービスから
+チル場所選択を更新するための API。
 
 API は Bot とは別プロセスで `./scripts/start-api.sh` として起動する。Discord Gateway には接続せず、Bot が同期した Postgres の `intro_messages` テーブルと、必要に応じて level-bot API を参照する。
 
@@ -139,6 +140,87 @@ curl -H "Authorization: Bearer $INTRO_API_KEY" \
 | `chill_place.next` | 次に解放される場所がない |
 | `stats_url` | 統計サイトリンク設定が無効、または対象ギルドではない |
 | `display.stats_link_label` | `stats_url` が null |
+
+## Chill Places
+
+### `GET /api/v1/guilds/{guild_id}/users/{user_id}/chill-places`
+
+level-bot などの信頼済みサービスから、対象ユーザーが現在レベルで選択できる
+チル場所一覧を取得する。`LEVEL_API_BASE` で level-bot API が設定されている必要がある。
+
+### Response `200`
+
+```json
+{
+  "guild_id": 123,
+  "user_id": 456,
+  "level": { "level": 8, "progress": 0.1, "progress_percent": 10 },
+  "selected_required_level": 5,
+  "places": [
+    {
+      "required_level": 8,
+      "name": "ふかふかチェア",
+      "emoji": "💤",
+      "display_name": "💤 ふかふかチェア",
+      "choice_label": "💤 ふかふかチェア (Lv.8)",
+      "tags": ["リラックス"],
+      "description": "ゆっくり休める席"
+    }
+  ]
+}
+```
+
+### `PUT /api/v1/guilds/{guild_id}/users/{user_id}/chill-place`
+
+対象ユーザーの自己紹介に表示するチル場所を設定する。指定した `required_level` が
+存在し、かつ現在レベルで解放済みの場合だけ保存される。
+
+### Request
+
+```bash
+curl -X PUT -H "Authorization: Bearer $INTRO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"required_level":8}' \
+  "https://<intro-api-service-domain>/api/v1/guilds/123/users/456/chill-place"
+```
+
+### Response `200`
+
+```json
+{
+  "guild_id": 123,
+  "user_id": 456,
+  "level": { "level": 8, "progress": 0.1, "progress_percent": 10 },
+  "selected": {
+    "required_level": 8,
+    "name": "ふかふかチェア",
+    "emoji": "💤",
+    "display_name": "💤 ふかふかチェア",
+    "choice_label": "💤 ふかふかチェア (Lv.8)",
+    "tags": ["リラックス"],
+    "description": "ゆっくり休める席"
+  },
+  "chill_place": {
+    "current": {
+      "required_level": 8,
+      "name": "ふかふかチェア",
+      "emoji": "💤",
+      "display_name": "💤 ふかふかチェア",
+      "tags": ["リラックス"],
+      "description": "ゆっくり休める席"
+    },
+    "next": null,
+    "selected_locked": false,
+    "display_text": "💤 ふかふかチェア (Lv.8)\nリラックス\nゆっくり休める席"
+  }
+}
+```
+
+### Chill Place Errors
+
+- `400` — ID / JSON / `required_level` が不正、または存在しないチル場所
+- `403` — 指定したチル場所が現在レベルでは未解放
+- `424` — level-bot API から現在レベルを取得できない
 
 ## Error Responses
 

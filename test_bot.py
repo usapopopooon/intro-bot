@@ -437,7 +437,7 @@ def test_build_cors_headers_allows_configured_origin(monkeypatch):
     headers = api.build_cors_headers(Request())
 
     assert headers["Access-Control-Allow-Origin"] == "https://example.com"
-    assert headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
+    assert headers["Access-Control-Allow-Methods"] == "GET, PUT, OPTIONS"
     assert "Authorization" in headers["Access-Control-Allow-Headers"]
     assert headers["Vary"] == "Origin"
 

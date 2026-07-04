@@ -18,11 +18,14 @@ from bot import (
     build_chill_places,
     build_user_stats_url,
     fetch_user_level,
+    format_chill_choice_name,
     init_schema,
     load_chill_place_overrides,
     load_user_chill_level,
     resolve_chill_display,
     serialize_chill_display,
+    serialize_chill_place,
+    set_user_chill_level,
     truncate,
 )
 
@@ -75,7 +78,7 @@ def build_cors_headers(request: web.Request) -> dict[str, str]:
         return {}
     headers = {
         "Access-Control-Allow-Origin": allowed_origin,
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
         "Access-Control-Max-Age": "600",
     }
@@ -128,6 +131,19 @@ def isoformat(value) -> str:
     return value.isoformat() if value is not None else ""
 
 
+def parse_guild_user_ids(request: web.Request) -> tuple[int, int] | web.Response:
+    try:
+        return int(request.match_info["guild_id"]), int(request.match_info["user_id"])
+    except ValueError:
+        return web.json_response({"detail": "guild_id and user_id must be integers"}, status=400)
+
+
+def serialize_chill_place_choice(place) -> dict:
+    payload = serialize_chill_place(place)
+    payload["choice_label"] = format_chill_choice_name(place)
+    return payload
+
+
 async def fetch_intro_record(pool: asyncpg.Pool, guild_id: int, user_id: int):
     async with pool.acquire() as con:
         return await con.fetchrow(
@@ -159,11 +175,10 @@ async def healthz(_request: web.Request) -> web.Response:
 
 
 async def intro_api(request: web.Request) -> web.Response:
-    try:
-        guild_id = int(request.match_info["guild_id"])
-        user_id = int(request.match_info["user_id"])
-    except ValueError:
-        return web.json_response({"detail": "guild_id and user_id must be integers"}, status=400)
+    ids = parse_guild_user_ids(request)
+    if isinstance(ids, web.Response):
+        return ids
+    guild_id, user_id = ids
 
     pool: asyncpg.Pool = request.app["pool"]
     row = await fetch_intro_record(pool, guild_id, user_id)
@@ -218,6 +233,85 @@ async def intro_api(request: web.Request) -> web.Response:
     )
 
 
+async def chill_places_api(request: web.Request) -> web.Response:
+    ids = parse_guild_user_ids(request)
+    if isinstance(ids, web.Response):
+        return ids
+    guild_id, user_id = ids
+
+    pool: asyncpg.Pool = request.app["pool"]
+    level_info = await get_cached_user_level(request, guild_id, user_id)
+    if level_info is None:
+        return web.json_response({"detail": "Current level unavailable"}, status=424)
+
+    current_level, progress = level_info
+    overrides = await load_chill_place_overrides(pool, guild_id)
+    selected_level = await load_user_chill_level(pool, guild_id, user_id)
+    places = build_chill_places(overrides)
+    unlocked = [place for place in places if place.required_level <= current_level]
+
+    return web.json_response(
+        {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "level": {
+                "level": current_level,
+                "progress": progress,
+                "progress_percent": int(progress * 100),
+            },
+            "selected_required_level": selected_level,
+            "places": [serialize_chill_place_choice(place) for place in unlocked],
+        }
+    )
+
+
+async def set_chill_place_api(request: web.Request) -> web.Response:
+    ids = parse_guild_user_ids(request)
+    if isinstance(ids, web.Response):
+        return ids
+    guild_id, user_id = ids
+
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"detail": "Invalid JSON body"}, status=400)
+
+    required_level = body.get("required_level") if isinstance(body, dict) else None
+    if not isinstance(required_level, int) or isinstance(required_level, bool):
+        return web.json_response({"detail": "required_level must be an integer"}, status=400)
+
+    pool: asyncpg.Pool = request.app["pool"]
+    level_info = await get_cached_user_level(request, guild_id, user_id)
+    if level_info is None:
+        return web.json_response({"detail": "Current level unavailable"}, status=424)
+
+    current_level, progress = level_info
+    overrides = await load_chill_place_overrides(pool, guild_id)
+    places = build_chill_places(overrides)
+    selected = next((place for place in places if place.required_level == required_level), None)
+    if selected is None:
+        return web.json_response({"detail": "Unknown chill place"}, status=400)
+    if selected.required_level > current_level:
+        return web.json_response({"detail": "Chill place is locked"}, status=403)
+
+    await set_user_chill_level(pool, guild_id, user_id, selected.required_level)
+    chill_display = resolve_chill_display(places, level_info, selected.required_level)
+
+    return web.json_response(
+        {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "level": {
+                "level": current_level,
+                "progress": progress,
+                "progress_percent": int(progress * 100),
+            },
+            "selected": serialize_chill_place_choice(selected),
+            "chill_place": serialize_chill_display(chill_display),
+        }
+    )
+
+
 async def make_app() -> web.Application:
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4)
     await init_schema(pool)
@@ -230,6 +324,8 @@ async def make_app() -> web.Application:
     app["level_cache"] = {}
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/v1/guilds/{guild_id}/users/{user_id}/intro", intro_api)
+    app.router.add_get("/api/v1/guilds/{guild_id}/users/{user_id}/chill-places", chill_places_api)
+    app.router.add_put("/api/v1/guilds/{guild_id}/users/{user_id}/chill-place", set_chill_place_api)
 
     async def cleanup(_app: web.Application) -> None:
         await session.close()

@@ -6,7 +6,7 @@ Discord でユーザーが VC に入室すると、自己紹介チャンネル�
 - 1 プロセスで複数の Bot トークンを並列起動可能
 - ギルドごとの設定(自己紹介チャンネル / クールダウン)は Postgres に永続化
 - 任意で [level-bot](../level-bot) 連携: 埋め込み footer に総合レベルを表示し、ユーザー統計サイトへのリンクやレベル解放式のチル場所を追加
-- `Authorization: Bearer <key>` で自己紹介表示内容を取得できる読み取り専用 API
+- `Authorization: Bearer <key>` で自己紹介表示内容の取得とチル場所選択更新ができる API
 - 運用 / 管理者向けの使い方: [docs/usage.md](docs/usage.md)
 - 外部 API 仕様: [docs/api.md](docs/api.md)
 
