@@ -149,33 +149,6 @@ async def init_schema(pool: asyncpg.Pool) -> None:
         )
         await con.execute(
             """
-            CREATE TABLE IF NOT EXISTS guild_chill_places (
-                guild_id       BIGINT NOT NULL,
-                required_level INTEGER NOT NULL CHECK (required_level >= 1),
-                name           TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
-                emoji          TEXT CHECK (emoji IS NULL OR char_length(emoji) BETWEEN 1 AND 40),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (guild_id, required_level)
-            )
-            """
-        )
-        await con.execute(
-            "ALTER TABLE guild_chill_places ADD COLUMN IF NOT EXISTS emoji TEXT "
-            "CHECK (emoji IS NULL OR char_length(emoji) BETWEEN 1 AND 40)"
-        )
-        await con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_chill_places (
-                guild_id       BIGINT NOT NULL,
-                user_id        BIGINT NOT NULL,
-                required_level INTEGER NOT NULL CHECK (required_level >= 1),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (guild_id, user_id)
-            )
-            """
-        )
-        await con.execute(
-            """
             CREATE TABLE IF NOT EXISTS intro_messages (
                 guild_id            BIGINT NOT NULL,
                 user_id             BIGINT NOT NULL,
@@ -198,108 +171,6 @@ async def load_all_configs(pool: asyncpg.Pool) -> dict[int, GuildConfig]:
     async with pool.acquire() as con:
         rows = await con.fetch(f"SELECT {_SELECT_COLUMNS} FROM bot_config")
     return {r["guild_id"]: _row_to_config(r) for r in rows}
-
-
-async def load_all_chill_place_overrides(pool: asyncpg.Pool) -> dict[int, dict[int, ChillPlaceOverride]]:
-    async with pool.acquire() as con:
-        rows = await con.fetch("SELECT guild_id, required_level, name, emoji FROM guild_chill_places")
-    overrides: dict[int, dict[int, ChillPlaceOverride]] = {}
-    for row in rows:
-        overrides.setdefault(row["guild_id"], {})[row["required_level"]] = ChillPlaceOverride(
-            name=row["name"],
-            emoji=row["emoji"],
-        )
-    return overrides
-
-
-async def load_all_user_chill_levels(pool: asyncpg.Pool) -> dict[int, dict[int, int]]:
-    async with pool.acquire() as con:
-        rows = await con.fetch("SELECT guild_id, user_id, required_level FROM user_chill_places")
-    selections: dict[int, dict[int, int]] = {}
-    for row in rows:
-        selections.setdefault(row["guild_id"], {})[row["user_id"]] = row["required_level"]
-    return selections
-
-
-async def load_chill_place_overrides(pool: asyncpg.Pool, guild_id: int) -> dict[int, ChillPlaceOverride]:
-    async with pool.acquire() as con:
-        rows = await con.fetch(
-            "SELECT required_level, name, emoji FROM guild_chill_places WHERE guild_id = $1",
-            guild_id,
-        )
-    return {
-        row["required_level"]: ChillPlaceOverride(
-            name=row["name"],
-            emoji=row["emoji"],
-        )
-        for row in rows
-    }
-
-
-async def load_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int) -> int | None:
-    async with pool.acquire() as con:
-        row = await con.fetchrow(
-            "SELECT required_level FROM user_chill_places WHERE guild_id = $1 AND user_id = $2",
-            guild_id,
-            user_id,
-        )
-    return row["required_level"] if row is not None else None
-
-
-async def upsert_chill_place(
-    pool: asyncpg.Pool,
-    guild_id: int,
-    required_level: int,
-    name: str,
-    emoji: str | None = None,
-) -> None:
-    async with pool.acquire() as con:
-        await con.execute(
-            """
-            INSERT INTO guild_chill_places (guild_id, required_level, name, emoji)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (guild_id, required_level) DO UPDATE
-            SET name = EXCLUDED.name, emoji = EXCLUDED.emoji, updated_at = NOW()
-            """,
-            guild_id,
-            required_level,
-            name,
-            emoji,
-        )
-
-
-async def remove_chill_place(pool: asyncpg.Pool, guild_id: int, required_level: int) -> bool:
-    async with pool.acquire() as con:
-        result = await con.execute(
-            "DELETE FROM guild_chill_places WHERE guild_id = $1 AND required_level = $2",
-            guild_id,
-            required_level,
-        )
-    return result == "DELETE 1"
-
-
-async def set_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int, required_level: int) -> None:
-    async with pool.acquire() as con:
-        await con.execute(
-            """
-            INSERT INTO user_chill_places (guild_id, user_id, required_level)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, user_id) DO UPDATE
-            SET required_level = EXCLUDED.required_level, updated_at = NOW()
-            """,
-            guild_id,
-            user_id,
-            required_level,
-        )
-
-
-async def clear_user_chill_level(pool: asyncpg.Pool, guild_id: int, user_id: int) -> None:
-    async with pool.acquire() as con:
-        await con.execute(
-            "DELETE FROM user_chill_places WHERE guild_id = $1 AND user_id = $2",
-            guild_id,
-            user_id,
-        )
 
 
 async def upsert_intro_record(pool: asyncpg.Pool, record: IntroRecord) -> None:
@@ -710,24 +581,15 @@ class ChillPlaceSelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
-        try:
-            await set_user_chill_level(
-                self.bot.pool,
-                self.guild_id,
-                self.user_id,
-                selected_place.required_level,
-            )
-        except Exception as e:
-            log.error("set_user_chill_level failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
-            return
-        await sync_level_user_chill_place(
+        updated = await sync_level_user_chill_place(
             self.bot.http_session,
             self.guild_id,
             self.user_id,
             selected_place.required_level,
         )
-        self.bot.user_chill_levels.setdefault(self.guild_id, {})[self.user_id] = selected_place.required_level
+        if not updated:
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
         await interaction.response.edit_message(content="チル場所を設定しました。", view=None)
         await interaction.followup.send(f"チル場所を「{selected_place.name}」に設定しました。")
 
@@ -780,6 +642,12 @@ class DynamicChillPlaceButton(
             return
         current_level, _ = level_info
         places = await bot.get_chill_places_preferred(self.guild_id)
+        if places is None:
+            await interaction.response.send_message(
+                "チル場所を level-bot から取得できませんでした。少し待ってから再度お試しください。",
+                ephemeral=True,
+            )
+            return
         if not any(place.required_level <= current_level for place in places):
             await interaction.response.send_message("選択できるチル場所がまだありません。", ephemeral=True)
             return
@@ -895,7 +763,7 @@ async def fetch_user_level(
 
 
 def build_level_chill_read_api_headers() -> dict[str, str] | None:
-    token = EXTERNAL_API_KEY or LEVEL_CHILL_API_KEY
+    token = LEVEL_CHILL_API_KEY or EXTERNAL_API_KEY
     if not token:
         return None
     return {"Authorization": f"Bearer {token}"}
@@ -1176,8 +1044,6 @@ class IntroBot(discord.Client):
         self.http_session: aiohttp.ClientSession | None = None
         # (guild_id, user_id) -> (level_info, expiry_monotonic)
         self.level_cache: dict[tuple[int, int], tuple[tuple[int, float] | None, float]] = {}
-        self.chill_place_overrides: dict[int, dict[int, ChillPlaceOverride]] = {}
-        self.user_chill_levels: dict[int, dict[int, int]] = {}
         self.intro_command_cursor: dict[tuple[int, int], int] = {}
         register_commands(self.tree, self)
 
@@ -1185,8 +1051,6 @@ class IntroBot(discord.Client):
         self.http_session = aiohttp.ClientSession()
         self.add_dynamic_items(DynamicChillPlaceButton)
         self.configs = await load_all_configs(self.pool)
-        self.chill_place_overrides = await load_all_chill_place_overrides(self.pool)
-        self.user_chill_levels = await load_all_user_chill_levels(self.pool)
         log.info("loaded %d guild configs", len(self.configs))
         await self.tree.sync()
 
@@ -1206,15 +1070,8 @@ class IntroBot(discord.Client):
         self.level_cache[key] = (value, now + LEVEL_CACHE_TTL_SECONDS)
         return value
 
-    def get_chill_places(self, guild_id: int) -> tuple[ChillPlace, ...]:
-        return build_chill_places(self.chill_place_overrides.get(guild_id))
-
-    async def get_chill_places_preferred(self, guild_id: int) -> tuple[ChillPlace, ...]:
-        places = await fetch_level_chill_places(self.http_session, guild_id)
-        return places if places is not None else self.get_chill_places(guild_id)
-
-    def get_user_chill_level(self, guild_id: int, user_id: int) -> int | None:
-        return self.user_chill_levels.get(guild_id, {}).get(user_id)
+    async def get_chill_places_preferred(self, guild_id: int) -> tuple[ChillPlace, ...] | None:
+        return await fetch_level_chill_places(self.http_session, guild_id)
 
     async def get_chill_display(
         self,
@@ -1232,10 +1089,7 @@ class IntroBot(discord.Client):
                     level_read.level_info or level_info,
                     level_read.selected_required_level,
                 )
-
-        places = self.get_chill_places(guild_id)
-        selected_level = self.get_user_chill_level(guild_id, user_id)
-        return resolve_chill_display(places, level_info, selected_level)
+        return None
 
     def next_voice_intro_member(self, channel: discord.VoiceChannel, preferred_user_id: int) -> discord.Member | None:
         members = _voice_members(channel)
@@ -1679,6 +1533,12 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
         level = level_info[0] if level_info is not None else None
         places = await bot.get_chill_places_preferred(interaction.guild_id)
+        if places is None:
+            await interaction.response.send_message(
+                "チル場所を level-bot から取得できませんでした。少し待ってから再度お試しください。",
+                ephemeral=True,
+            )
+            return
         text = format_chill_list(places, level=level)
         if level is None:
             text = "現在レベルを取得できませんでした。場所一覧のみ表示します。\n" + text
@@ -1692,6 +1552,8 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
         current_level = level_info[0] if level_info is not None else None
         places = await bot.get_chill_places_preferred(interaction.guild_id)
+        if places is None:
+            return []
         return build_chill_place_choices(places, current, current_level)
 
     @chill_group.command(name="set", description="自己紹介に表示するチル場所を選択")
@@ -1710,6 +1572,12 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             return
         current_level, _ = level_info
         places = await bot.get_chill_places_preferred(interaction.guild_id)
+        if places is None:
+            await interaction.response.send_message(
+                "チル場所を level-bot から取得できませんでした。少し待ってから再度お試しください。",
+                ephemeral=True,
+            )
+            return
         selected_place = resolve_chill_place_selection(places, place)
         if selected_place is None:
             await interaction.response.send_message(
@@ -1726,43 +1594,29 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
                 ephemeral=True,
             )
             return
-        try:
-            await set_user_chill_level(
-                bot.pool,
-                interaction.guild_id,
-                interaction.user.id,
-                selected_place.required_level,
-            )
-        except Exception as e:
-            log.error("set_user_chill_level failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
-            return
-        await sync_level_user_chill_place(
+        updated = await sync_level_user_chill_place(
             bot.http_session,
             interaction.guild_id,
             interaction.user.id,
             selected_place.required_level,
         )
-        bot.user_chill_levels.setdefault(interaction.guild_id, {})[interaction.user.id] = selected_place.required_level
+        if not updated:
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
         await interaction.response.send_message(
             f"チル場所を「{selected_place.name}」に設定しました。",
         )
 
     @chill_group.command(name="clear", description="チル場所の選択を解除")
     async def chill_clear(interaction: discord.Interaction) -> None:
-        try:
-            await clear_user_chill_level(bot.pool, interaction.guild_id, interaction.user.id)
-        except Exception as e:
-            log.error("clear_user_chill_level failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
-            return
-        if interaction.guild_id in bot.user_chill_levels:
-            bot.user_chill_levels[interaction.guild_id].pop(interaction.user.id, None)
-        await clear_level_user_chill_place(
+        cleared = await clear_level_user_chill_place(
             bot.http_session,
             interaction.guild_id,
             interaction.user.id,
         )
+        if not cleared:
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
         await interaction.response.send_message(
             "チル場所の選択を解除しました。現在レベルで解放済みの一番上の場所を自動表示します。",
         )
@@ -1929,26 +1783,21 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         if not clean_name:
             await interaction.response.send_message("場所名を入力してください。", ephemeral=True)
             return
-        try:
-            await upsert_chill_place(bot.pool, interaction.guild_id, level, clean_name, clean_emoji)
-        except Exception as e:
-            log.error("upsert_chill_place failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
-            return
-        bot.chill_place_overrides.setdefault(interaction.guild_id, {})[level] = ChillPlaceOverride(
-            name=clean_name,
-            emoji=clean_emoji,
-        )
-        await sync_level_guild_chill_place(
+        updated = await sync_level_guild_chill_place(
             bot.http_session,
             interaction.guild_id,
             level,
             clean_name,
             clean_emoji,
         )
-        place = next(p for p in bot.get_chill_places(interaction.guild_id) if p.required_level == level)
+        if not updated:
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
+            return
+        places = await bot.get_chill_places_preferred(interaction.guild_id)
+        place = next((p for p in places or () if p.required_level == level), None)
+        display_name = format_chill_place_name(place) if place is not None else clean_name
         await interaction.response.send_message(
-            f"Lv.{level} のチル場所を「{format_chill_place_name(place)}」に設定しました。",
+            f"Lv.{level} のチル場所を「{display_name}」に設定しました。",
             ephemeral=True,
         )
 
@@ -1960,27 +1809,16 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     ) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
-        try:
-            removed = await remove_chill_place(bot.pool, interaction.guild_id, level)
-        except Exception as e:
-            log.error("remove_chill_place failed: %s", e)
-            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
-            return
-        if interaction.guild_id in bot.chill_place_overrides:
-            bot.chill_place_overrides[interaction.guild_id].pop(level, None)
-        await remove_level_guild_chill_place(
+        removed = await remove_level_guild_chill_place(
             bot.http_session,
             interaction.guild_id,
             level,
         )
         if not removed:
-            await interaction.response.send_message(
-                "カスタム設定はありませんでした。プリセットの場所はそのまま表示されます。",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("更新に失敗しました。", ephemeral=True)
             return
         await interaction.response.send_message(
-            f"Lv.{level} のカスタム設定を削除しました。",
+            f"Lv.{level} のカスタム設定を削除しました。プリセットの場所はそのまま表示されます。",
             ephemeral=True,
         )
 
@@ -1989,6 +1827,12 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
         places = await bot.get_chill_places_preferred(interaction.guild_id)
+        if places is None:
+            await interaction.response.send_message(
+                "チル場所を level-bot から取得できませんでした。少し待ってから再度お試しください。",
+                ephemeral=True,
+            )
+            return
         text = truncate(format_chill_list(places), DISCORD_MESSAGE_LIMIT)
         await interaction.response.send_message(
             text,

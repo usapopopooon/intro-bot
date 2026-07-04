@@ -314,7 +314,7 @@ GET /api/v1/guilds/{guild_id}/levels/leaderboard?axis=total&limit=10&offset=0
 - `place` はレベル番号、場所名、絵文字付き場所名、`場所名 (Lv.N)` 形式で解決される。
 - 現在レベルを取得できない場合は選択不可。
 - 未解放の場所を指定した場合は拒否される。
-- 設定は `user_chill_places` に永続化される。
+- 設定は level-bot API 経由で level-bot DB に永続化される。
 
 ### `/intro-chill clear`
 
@@ -334,6 +334,7 @@ GET /api/v1/guilds/{guild_id}/levels/leaderboard?axis=total&limit=10&offset=0
 ## チル場所の管理者操作
 
 管理者は `/intro-config chill-place` 配下でギルド単位のカスタム場所を管理できる。
+実体の保存先は level-bot で、intro-bot は API 経由で更新する。
 
 ### `/intro-config chill-place add <level> <name> [emoji]`
 
@@ -342,7 +343,7 @@ GET /api/v1/guilds/{guild_id}/levels/leaderboard?axis=total&limit=10&offset=0
 - `emoji`: 任意。1 から 40 文字。省略時は、同レベルのプリセットがあればその絵文字を引き継ぐ。
 - プリセットと同じ `level` の場合、そのギルドでは名前と絵文字を上書きする。
 - プリセットにない `level` の場合、新しい解放場所として追加する。
-- 保存先は `guild_chill_places`。
+- 保存先は level-bot DB。
 
 プリセット上書きの場合、タグと説明はプリセットのものを引き継ぐ。新規レベルの場合、タグと説明は空になる。
 
@@ -357,34 +358,11 @@ GET /api/v1/guilds/{guild_id}/levels/leaderboard?axis=total&limit=10&offset=0
 - プリセットとカスタム設定を統合した、このギルドで有効なチル場所一覧を表示する。
 - 結果は ephemeral。
 
-## intro-bot 側 DB
+## チル場所データの保存先
 
-### `guild_chill_places`
-
-ギルド単位のチル場所カスタム設定。
-
-| column | 内容 |
-| --- | --- |
-| `guild_id` | Discord guild ID |
-| `required_level` | 解放レベル。1 以上 |
-| `name` | 場所名。1 から 80 文字 |
-| `emoji` | 任意表示絵文字。1 から 40 文字 |
-| `updated_at` | 更新日時 |
-
-主キーは `(guild_id, required_level)`。
-
-### `user_chill_places`
-
-ユーザーごとのチル場所選択。
-
-| column | 内容 |
-| --- | --- |
-| `guild_id` | Discord guild ID |
-| `user_id` | Discord user ID |
-| `required_level` | 選択中の場所の解放レベル |
-| `updated_at` | 更新日時 |
-
-主キーは `(guild_id, user_id)`。
+チル場所のカスタム定義とユーザー選択は level-bot DB が正となる。
+intro-bot 側 DB は自己紹介メッセージとintro-bot設定だけを保持し、チル場所用の
+`guild_chill_places` / `user_chill_places` は作成・更新しない。
 
 ### `intro_messages`
 

@@ -15,19 +15,15 @@ from bot import (
     EXTERNAL_API_KEY,
     LEVEL_API_BASE,
     LEVEL_CACHE_TTL_SECONDS,
-    build_chill_places,
     build_user_stats_url,
     fetch_level_chill_places,
     fetch_level_chill_read,
     fetch_user_level,
     format_chill_choice_name,
     init_schema,
-    load_chill_place_overrides,
-    load_user_chill_level,
     resolve_chill_display,
     serialize_chill_display,
     serialize_chill_place,
-    set_user_chill_level,
     sync_level_user_chill_place,
     truncate,
 )
@@ -183,8 +179,7 @@ async def intro_api(request: web.Request) -> web.Response:
         return ids
     guild_id, user_id = ids
 
-    pool: asyncpg.Pool = request.app["pool"]
-    row = await fetch_intro_record(pool, guild_id, user_id)
+    row = await fetch_intro_record(request.app["pool"], guild_id, user_id)
     if row is None:
         return web.json_response({"detail": "Intro not found"}, status=404)
 
@@ -192,13 +187,15 @@ async def intro_api(request: web.Request) -> web.Response:
     level_chill_read = await fetch_level_chill_read(request.app["http_session"], guild_id, user_id)
     if level_info is None and level_chill_read is not None:
         level_info = level_chill_read.level_info
+    chill_display = None
     if level_chill_read is not None and level_chill_read.display is not None:
         chill_display = level_chill_read.display
-    else:
-        overrides = await load_chill_place_overrides(pool, guild_id)
-        selected_level = await load_user_chill_level(pool, guild_id, user_id)
-        places = build_chill_places(overrides)
-        chill_display = resolve_chill_display(places, level_info, selected_level)
+    elif level_chill_read is not None and level_chill_read.places:
+        chill_display = resolve_chill_display(
+            level_chill_read.places,
+            level_chill_read.level_info or level_info,
+            level_chill_read.selected_required_level,
+        )
     stats_url = build_user_stats_url(guild_id, user_id)
 
     level_payload = None
@@ -248,22 +245,11 @@ async def chill_places_api(request: web.Request) -> web.Response:
         return ids
     guild_id, user_id = ids
 
-    pool: asyncpg.Pool = request.app["pool"]
-    level_info = await get_cached_user_level(request, guild_id, user_id)
-    if level_info is None:
-        return web.json_response({"detail": "Current level unavailable"}, status=424)
-
-    current_level, progress = level_info
     level_chill_read = await fetch_level_chill_read(request.app["http_session"], guild_id, user_id)
-    if level_chill_read is not None and level_chill_read.level_info is not None:
-        current_level, progress = level_chill_read.level_info
-        selected_level = level_chill_read.selected_required_level
-        unlocked = list(level_chill_read.places)
-    else:
-        overrides = await load_chill_place_overrides(pool, guild_id)
-        selected_level = await load_user_chill_level(pool, guild_id, user_id)
-        places = build_chill_places(overrides)
-        unlocked = [place for place in places if place.required_level <= current_level]
+    if level_chill_read is None or level_chill_read.level_info is None:
+        return web.json_response({"detail": "Level chill API unavailable"}, status=424)
+
+    current_level, progress = level_chill_read.level_info
 
     return web.json_response(
         {
@@ -274,8 +260,8 @@ async def chill_places_api(request: web.Request) -> web.Response:
                 "progress": progress,
                 "progress_percent": int(progress * 100),
             },
-            "selected_required_level": selected_level,
-            "places": [serialize_chill_place_choice(place) for place in unlocked],
+            "selected_required_level": level_chill_read.selected_required_level,
+            "places": [serialize_chill_place_choice(place) for place in level_chill_read.places],
         }
     )
 
@@ -295,30 +281,34 @@ async def set_chill_place_api(request: web.Request) -> web.Response:
     if not isinstance(required_level, int) or isinstance(required_level, bool):
         return web.json_response({"detail": "required_level must be an integer"}, status=400)
 
-    pool: asyncpg.Pool = request.app["pool"]
-    level_info = await get_cached_user_level(request, guild_id, user_id)
-    if level_info is None:
-        return web.json_response({"detail": "Current level unavailable"}, status=424)
+    level_chill_read = await fetch_level_chill_read(request.app["http_session"], guild_id, user_id)
+    if level_chill_read is None or level_chill_read.level_info is None:
+        return web.json_response({"detail": "Level chill API unavailable"}, status=424)
 
-    current_level, progress = level_info
+    current_level, progress = level_chill_read.level_info
     places = await fetch_level_chill_places(request.app["http_session"], guild_id)
     if places is None:
-        overrides = await load_chill_place_overrides(pool, guild_id)
-        places = build_chill_places(overrides)
+        return web.json_response({"detail": "Level chill API unavailable"}, status=424)
     selected = next((place for place in places if place.required_level == required_level), None)
     if selected is None:
         return web.json_response({"detail": "Unknown chill place"}, status=400)
     if selected.required_level > current_level:
         return web.json_response({"detail": "Chill place is locked"}, status=403)
 
-    await set_user_chill_level(pool, guild_id, user_id, selected.required_level)
-    await sync_level_user_chill_place(
+    updated = await sync_level_user_chill_place(
         request.app["http_session"],
         guild_id,
         user_id,
         selected.required_level,
     )
-    chill_display = resolve_chill_display(places, level_info, selected.required_level)
+    if not updated:
+        return web.json_response({"detail": "Level chill API update failed"}, status=502)
+
+    fresh_read = await fetch_level_chill_read(request.app["http_session"], guild_id, user_id)
+    if fresh_read is not None and fresh_read.display is not None:
+        chill_display = fresh_read.display
+    else:
+        chill_display = resolve_chill_display(places, (current_level, progress), selected.required_level)
 
     return web.json_response(
         {

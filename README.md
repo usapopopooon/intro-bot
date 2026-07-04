@@ -37,7 +37,7 @@ Bot ページで以下の **Privileged Gateway Intents** を有効化する。
 | `USER_STATS_SITE_GUILD_ID` | — | (空) | ユーザー統計サイトへのリンクを表示する対象ギルド ID |
 | `USER_STATS_SITE_BASE_URL` | — | (空) | `/level` と同じユーザー統計サイトの Base URL。`/u/<user_id>/level?days=30` を付けてリンクする |
 | `EXTERNAL_API_KEY` | — | (空) | level-bot 側で外部 API キー認証が有効な場合のみ設定。`Authorization: Bearer <key>` で送信される |
-| `LEVEL_CHILL_API_KEY` | — | `EXTERNAL_API_KEY` | チル場所選択/定義を level-bot DB へ dual-write するための Bearer キー |
+| `LEVEL_CHILL_API_KEY` | — | `EXTERNAL_API_KEY` | チル場所選択/定義を level-bot DB へ更新するための Bearer キー |
 | `INTRO_API_KEY` | — | `EXTERNAL_API_KEY` | intro-bot 外部 API 用の Bearer キー。空なら外部 API は 401 |
 | `INTRO_API_HOST` | — | `0.0.0.0` | intro-bot 外部 API の bind host |
 | `INTRO_API_PORT` | — | `PORT` or `8000` | intro-bot 外部 API の bind port。Railway では未設定推奨 |

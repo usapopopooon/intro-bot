@@ -414,6 +414,13 @@ def test_parse_level_chill_read_with_display():
     assert read.display.next_place.required_level == 9
 
 
+def test_build_level_chill_read_api_headers_prefers_chill_key(monkeypatch):
+    monkeypatch.setattr(bot, "EXTERNAL_API_KEY", "external-key")
+    monkeypatch.setattr(bot, "LEVEL_CHILL_API_KEY", "chill-key")
+
+    assert bot.build_level_chill_read_api_headers() == {"Authorization": "Bearer chill-key"}
+
+
 def test_format_chill_display_includes_vibe():
     display = bot.resolve_chill_display(bot.build_chill_places(), (8, 0.1))
 
