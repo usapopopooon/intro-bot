@@ -369,6 +369,51 @@ def test_resolve_chill_display_none_without_level():
     assert bot.resolve_chill_display(bot.build_chill_places(), None) is None
 
 
+def test_parse_level_chill_read_with_display():
+    payload = {
+        "level": {"level": 8, "progress": 0.25},
+        "selected_required_level": 5,
+        "places": [
+            {
+                "required_level": 1,
+                "name": "入口のベンチ",
+                "emoji": "🪑",
+                "tags": ["はじめまして", "気軽"],
+                "description": "まずはここで。",
+            }
+        ],
+        "chill_place": {
+            "current": {
+                "required_level": 5,
+                "name": "カフェカウンター",
+                "emoji": "🥤",
+                "tags": ["雑談"],
+                "description": "飲み物を片手に。",
+            },
+            "next": {
+                "required_level": 9,
+                "name": "充電席",
+                "emoji": "🔌",
+                "tags": ["回復"],
+                "description": None,
+            },
+            "selected_locked": False,
+        },
+    }
+
+    read = bot.parse_level_chill_read(payload)
+
+    assert read is not None
+    assert read.level_info == (8, 0.25)
+    assert read.selected_required_level == 5
+    assert read.places[0].tags == ("はじめまして", "気軽")
+    assert read.display is not None
+    assert read.display.current is not None
+    assert read.display.current.required_level == 5
+    assert read.display.next_place is not None
+    assert read.display.next_place.required_level == 9
+
+
 def test_format_chill_display_includes_vibe():
     display = bot.resolve_chill_display(bot.build_chill_places(), (8, 0.1))
 

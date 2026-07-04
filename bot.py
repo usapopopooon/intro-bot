@@ -80,6 +80,14 @@ class IntroRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class LevelChillRead:
+    level_info: tuple[int, float] | None
+    selected_required_level: int | None
+    places: tuple[ChillPlace, ...]
+    display: ChillDisplay | None
+
+
 DEFAULT_CHILL_PLACES: tuple[ChillPlace, ...] = (
     ChillPlace(1, "入口のベンチ", "🪑", ("はじめまして", "気軽"), "まずはここで、ゆっくり空気を眺める席。"),
     ChillPlace(2, "ロビーソファ", "🛋️", ("雑談", "のんびり"), "通りすがりの会話に混ざりやすい、やわらかい場所。"),
@@ -654,12 +662,19 @@ def build_user_stats_view(stats_url: str | None) -> discord.ui.View | None:
 
 
 class ChillPlaceSelect(discord.ui.Select):
-    def __init__(self, bot, guild_id: int, user_id: int, current_level: int) -> None:
+    def __init__(
+        self,
+        bot,
+        guild_id: int,
+        user_id: int,
+        current_level: int,
+        places: tuple[ChillPlace, ...],
+    ) -> None:
         self.bot = bot
         self.guild_id = guild_id
         self.user_id = user_id
         self.current_level = current_level
-        places = bot.get_chill_places(guild_id)
+        self.places = places
         options = [
             discord.SelectOption(
                 label=format_chill_choice_name(place)[:100],
@@ -677,7 +692,7 @@ class ChillPlaceSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        selected_place = resolve_chill_place_selection(self.bot.get_chill_places(self.guild_id), self.values[0])
+        selected_place = resolve_chill_place_selection(self.places, self.values[0])
         if selected_place is None:
             await interaction.response.send_message("そのチル場所は設定されていません。", ephemeral=True)
             return
@@ -718,9 +733,16 @@ class ChillPlaceSelect(discord.ui.Select):
 
 
 class ChillPlaceSelectView(discord.ui.View):
-    def __init__(self, bot, guild_id: int, user_id: int, current_level: int) -> None:
+    def __init__(
+        self,
+        bot,
+        guild_id: int,
+        user_id: int,
+        current_level: int,
+        places: tuple[ChillPlace, ...],
+    ) -> None:
         super().__init__(timeout=180)
-        self.add_item(ChillPlaceSelect(bot, guild_id, user_id, current_level))
+        self.add_item(ChillPlaceSelect(bot, guild_id, user_id, current_level, places))
 
 
 class DynamicChillPlaceButton(
@@ -757,12 +779,13 @@ class DynamicChillPlaceButton(
             await interaction.response.send_message("現在レベルを取得できませんでした。", ephemeral=True)
             return
         current_level, _ = level_info
-        if not any(place.required_level <= current_level for place in bot.get_chill_places(self.guild_id)):
+        places = await bot.get_chill_places_preferred(self.guild_id)
+        if not any(place.required_level <= current_level for place in places):
             await interaction.response.send_message("選択できるチル場所がまだありません。", ephemeral=True)
             return
         await interaction.response.send_message(
             "自己紹介に表示するチル場所を選んでください。",
-            view=ChillPlaceSelectView(bot, self.guild_id, self.user_id, current_level),
+            view=ChillPlaceSelectView(bot, self.guild_id, self.user_id, current_level, places),
             ephemeral=True,
         )
 
@@ -869,6 +892,129 @@ async def fetch_user_level(
     if not isinstance(level, int) or not isinstance(progress, (int, float)):
         return None
     return level, float(progress)
+
+
+def build_level_chill_read_api_headers() -> dict[str, str] | None:
+    token = EXTERNAL_API_KEY or LEVEL_CHILL_API_KEY
+    if not token:
+        return None
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _string_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_or_none(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def parse_level_chill_place(raw: object) -> ChillPlace | None:
+    if not isinstance(raw, dict):
+        return None
+    required_level = _int_or_none(raw.get("required_level"))
+    name = _string_or_none(raw.get("name"))
+    if required_level is None or not name:
+        return None
+    raw_tags = raw.get("tags")
+    tags = tuple(tag for tag in raw_tags if isinstance(tag, str)) if isinstance(raw_tags, list) else ()
+    return ChillPlace(
+        required_level=required_level,
+        name=name,
+        emoji=_string_or_none(raw.get("emoji")),
+        tags=tags,
+        description=_string_or_none(raw.get("description")),
+    )
+
+
+def parse_level_chill_display(raw: object) -> ChillDisplay | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    current = parse_level_chill_place(raw.get("current"))
+    next_place = parse_level_chill_place(raw.get("next"))
+    selected_locked = raw.get("selected_locked")
+    if current is None and next_place is None and not isinstance(selected_locked, bool):
+        return None
+    return ChillDisplay(
+        current=current,
+        next_place=next_place,
+        selected_locked=selected_locked if isinstance(selected_locked, bool) else False,
+    )
+
+
+def parse_level_chill_level(raw: object) -> tuple[int, float] | None:
+    if not isinstance(raw, dict):
+        return None
+    level = _int_or_none(raw.get("level"))
+    progress = raw.get("progress")
+    if level is None or not isinstance(progress, (int, float)):
+        return None
+    return level, float(progress)
+
+
+def parse_level_chill_read(raw: object) -> LevelChillRead | None:
+    if not isinstance(raw, dict):
+        return None
+    raw_places = raw.get("places")
+    places = (
+        tuple(place for place in (parse_level_chill_place(item) for item in raw_places) if place is not None)
+        if isinstance(raw_places, list)
+        else ()
+    )
+    return LevelChillRead(
+        level_info=parse_level_chill_level(raw.get("level")),
+        selected_required_level=_int_or_none(raw.get("selected_required_level")),
+        places=places,
+        display=parse_level_chill_display(raw.get("chill_place")),
+    )
+
+
+async def fetch_level_chill_read(
+    session: aiohttp.ClientSession | None,
+    guild_id: int,
+    user_id: int,
+) -> LevelChillRead | None:
+    if session is None or not LEVEL_API_BASE:
+        return None
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/users/{user_id}/chill-places"
+    try:
+        async with session.get(
+            url,
+            headers=build_level_chill_read_api_headers(),
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            return parse_level_chill_read(await resp.json())
+    except (aiohttp.ClientError, TimeoutError):
+        return None
+
+
+async def fetch_level_chill_places(
+    session: aiohttp.ClientSession | None,
+    guild_id: int,
+) -> tuple[ChillPlace, ...] | None:
+    if session is None or not LEVEL_API_BASE:
+        return None
+    url = f"{LEVEL_API_BASE}/api/v1/guilds/{guild_id}/chill-places"
+    try:
+        async with session.get(
+            url,
+            headers=build_level_chill_read_api_headers(),
+            timeout=aiohttp.ClientTimeout(total=LEVEL_API_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+    except (aiohttp.ClientError, TimeoutError):
+        return None
+    if not isinstance(data, list):
+        return None
+    return tuple(place for place in (parse_level_chill_place(item) for item in data) if place is not None)
 
 
 def build_level_chill_api_headers() -> dict[str, str] | None:
@@ -1063,6 +1209,10 @@ class IntroBot(discord.Client):
     def get_chill_places(self, guild_id: int) -> tuple[ChillPlace, ...]:
         return build_chill_places(self.chill_place_overrides.get(guild_id))
 
+    async def get_chill_places_preferred(self, guild_id: int) -> tuple[ChillPlace, ...]:
+        places = await fetch_level_chill_places(self.http_session, guild_id)
+        return places if places is not None else self.get_chill_places(guild_id)
+
     def get_user_chill_level(self, guild_id: int, user_id: int) -> int | None:
         return self.user_chill_levels.get(guild_id, {}).get(user_id)
 
@@ -1072,6 +1222,17 @@ class IntroBot(discord.Client):
         user_id: int,
         level_info: tuple[int, float] | None,
     ) -> ChillDisplay | None:
+        level_read = await fetch_level_chill_read(self.http_session, guild_id, user_id)
+        if level_read is not None:
+            if level_read.display is not None:
+                return level_read.display
+            if level_read.places:
+                return resolve_chill_display(
+                    level_read.places,
+                    level_read.level_info or level_info,
+                    level_read.selected_required_level,
+                )
+
         places = self.get_chill_places(guild_id)
         selected_level = self.get_user_chill_level(guild_id, user_id)
         return resolve_chill_display(places, level_info, selected_level)
@@ -1517,7 +1678,8 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     async def chill_list(interaction: discord.Interaction) -> None:
         level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
         level = level_info[0] if level_info is not None else None
-        text = format_chill_list(bot.get_chill_places(interaction.guild_id), level=level)
+        places = await bot.get_chill_places_preferred(interaction.guild_id)
+        text = format_chill_list(places, level=level)
         if level is None:
             text = "現在レベルを取得できませんでした。場所一覧のみ表示します。\n" + text
         text = truncate(text, DISCORD_MESSAGE_LIMIT)
@@ -1529,7 +1691,8 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     ) -> list[app_commands.Choice[str]]:
         level_info = await bot.get_user_level(interaction.guild_id, interaction.user.id)
         current_level = level_info[0] if level_info is not None else None
-        return build_chill_place_choices(bot.get_chill_places(interaction.guild_id), current, current_level)
+        places = await bot.get_chill_places_preferred(interaction.guild_id)
+        return build_chill_place_choices(places, current, current_level)
 
     @chill_group.command(name="set", description="自己紹介に表示するチル場所を選択")
     @app_commands.describe(place="チル場所の名前")
@@ -1546,7 +1709,7 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
             )
             return
         current_level, _ = level_info
-        places = bot.get_chill_places(interaction.guild_id)
+        places = await bot.get_chill_places_preferred(interaction.guild_id)
         selected_place = resolve_chill_place_selection(places, place)
         if selected_place is None:
             await interaction.response.send_message(
@@ -1825,7 +1988,8 @@ def register_commands(tree: app_commands.CommandTree, bot: IntroBot) -> None:
     async def chill_place_list(interaction: discord.Interaction) -> None:
         if not _ensure_admin(interaction):
             return await _deny(interaction)
-        text = truncate(format_chill_list(bot.get_chill_places(interaction.guild_id)), DISCORD_MESSAGE_LIMIT)
+        places = await bot.get_chill_places_preferred(interaction.guild_id)
+        text = truncate(format_chill_list(places), DISCORD_MESSAGE_LIMIT)
         await interaction.response.send_message(
             text,
             ephemeral=True,

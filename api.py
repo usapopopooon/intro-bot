@@ -17,6 +17,8 @@ from bot import (
     LEVEL_CACHE_TTL_SECONDS,
     build_chill_places,
     build_user_stats_url,
+    fetch_level_chill_places,
+    fetch_level_chill_read,
     fetch_user_level,
     format_chill_choice_name,
     init_schema,
@@ -187,10 +189,16 @@ async def intro_api(request: web.Request) -> web.Response:
         return web.json_response({"detail": "Intro not found"}, status=404)
 
     level_info = await get_cached_user_level(request, guild_id, user_id)
-    overrides = await load_chill_place_overrides(pool, guild_id)
-    selected_level = await load_user_chill_level(pool, guild_id, user_id)
-    places = build_chill_places(overrides)
-    chill_display = resolve_chill_display(places, level_info, selected_level)
+    level_chill_read = await fetch_level_chill_read(request.app["http_session"], guild_id, user_id)
+    if level_info is None and level_chill_read is not None:
+        level_info = level_chill_read.level_info
+    if level_chill_read is not None and level_chill_read.display is not None:
+        chill_display = level_chill_read.display
+    else:
+        overrides = await load_chill_place_overrides(pool, guild_id)
+        selected_level = await load_user_chill_level(pool, guild_id, user_id)
+        places = build_chill_places(overrides)
+        chill_display = resolve_chill_display(places, level_info, selected_level)
     stats_url = build_user_stats_url(guild_id, user_id)
 
     level_payload = None
@@ -246,10 +254,16 @@ async def chill_places_api(request: web.Request) -> web.Response:
         return web.json_response({"detail": "Current level unavailable"}, status=424)
 
     current_level, progress = level_info
-    overrides = await load_chill_place_overrides(pool, guild_id)
-    selected_level = await load_user_chill_level(pool, guild_id, user_id)
-    places = build_chill_places(overrides)
-    unlocked = [place for place in places if place.required_level <= current_level]
+    level_chill_read = await fetch_level_chill_read(request.app["http_session"], guild_id, user_id)
+    if level_chill_read is not None and level_chill_read.level_info is not None:
+        current_level, progress = level_chill_read.level_info
+        selected_level = level_chill_read.selected_required_level
+        unlocked = list(level_chill_read.places)
+    else:
+        overrides = await load_chill_place_overrides(pool, guild_id)
+        selected_level = await load_user_chill_level(pool, guild_id, user_id)
+        places = build_chill_places(overrides)
+        unlocked = [place for place in places if place.required_level <= current_level]
 
     return web.json_response(
         {
@@ -287,8 +301,10 @@ async def set_chill_place_api(request: web.Request) -> web.Response:
         return web.json_response({"detail": "Current level unavailable"}, status=424)
 
     current_level, progress = level_info
-    overrides = await load_chill_place_overrides(pool, guild_id)
-    places = build_chill_places(overrides)
+    places = await fetch_level_chill_places(request.app["http_session"], guild_id)
+    if places is None:
+        overrides = await load_chill_place_overrides(pool, guild_id)
+        places = build_chill_places(overrides)
     selected = next((place for place in places if place.required_level == required_level), None)
     if selected is None:
         return web.json_response({"detail": "Unknown chill place"}, status=400)
